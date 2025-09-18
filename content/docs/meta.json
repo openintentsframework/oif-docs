@@ -1,0 +1,9 @@
+{
+    "pages": [
+        "index",
+        "smart-contracts",
+        "solvers",
+        "aggregators",
+        "apis"
+    ]
+}

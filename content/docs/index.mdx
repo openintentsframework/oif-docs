@@ -5,6 +5,22 @@ description: Welcome to the OIF docs!
 
 Welcome to the docs! Start with one of the sections below.
 
+### Example: Mermaid diagram
+
+```mermaid
+flowchart LR
+  client1[client] -->|get quote| agg1[aggregator]
+  agg1 -->|get quote| solver1[solver]
+  agg1 -->|adapted quote request| solver2[solver]
+
+  client2[client] <-->|aggregated quotes| agg2[aggregator]
+  solver1 -->|quote| agg2
+  solver2 -->|quote| agg2
+
+  client3[client] -->|submit intent| agg3[aggregator]
+  agg3 -->|submit intent| solver3[solver]
+```
+
 ## What is Next?
 
 <Cards>

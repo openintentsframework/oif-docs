@@ -29,6 +29,6 @@ export const openapi = createOpenAPI({
   input: inputs,
 });
 
-export const defaultOpenAPIDocument = inputs[0] ?? './openapi/petstore.json';
+export const defaultOpenAPIDocument = inputs[0] ?? './openapi/oif.json';
 
 

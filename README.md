@@ -57,7 +57,6 @@ This project integrates the official OpenAPI UI for Fumadocs.
 ### Add or update APIs
 
 1. Place your schema files in the `openapi/` directory. Supported formats: `.json`, `.yaml`, `.yml`.
-   - Example included: `openapi/petstore.json`.
 2. No additional config is required. All files in `openapi/` are automatically loaded by `src/lib/openapi.ts`.
 3. Create or edit an MDX page and render the UI:
 

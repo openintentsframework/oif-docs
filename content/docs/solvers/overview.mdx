@@ -1,13 +1,101 @@
----
-title: Overview
-description: What is a solver and how it participates
----
+# Overview
 
-Solvers observe intents, compute feasible solutions, and bid to execute.
+## What is OIF?
 
-### Responsibilities
+The Open Intents Framework (OIF) is a cross-chain intent execution protocol that enables users to express desired outcomes (intents) across different blockchain networks without worrying about the complex execution details. Instead of manually bridging tokens, swapping on multiple chains, and managing cross-chain transactions, users simply state what they want to achieve.
 
-- Listen to aggregator events
-- Construct bids with proofs
-- Execute on-chain when selected
+## What is a Solver?
 
+Solvers are the execution layer of OIF. They are autonomous services that compete to fulfill user intents efficiently and profitably. When a user expresses an intent (like "I want to swap 100 USDC on Base for ETH on Arbitrum"), solvers discover these intents, and handle all the cross-chain complexity on the user's behalf.
+
+The OIF Solver is a high-performance implementation built in Rust that provides a complete solver system for the Open Intents Framework.
+
+## Why Run a Solver?
+
+Running an OIF Solver allows you to:
+
+- **Earn Fees**: Generate revenue by executing cross-chain intents and earning the spread between user quotes and actual execution costs
+- **Provide Liquidity**: Facilitate cross-chain operations by providing capital for instant settlement
+- **Support the Ecosystem**: Help make cross-chain operations seamless and user-friendly
+- **Customize Strategy**: Implement your own execution strategies and profitability models
+
+## Key Capabilities
+
+### Cross-Chain Intent Execution
+
+- **Discover Intents**: Monitor multiple blockchain networks simultaneously for new cross-chain intent events
+- **Validate Orders**: Parse and validate intent data according to EIP-7683 and other supported protocols
+- **Settle Securely**: Handle the complete settlement process including fill verification and claim processing
+
+### Multi-Protocol Support
+
+- **EIP-7683**: Full support for the Cross-Chain Intents Standard
+- **Multiple Order Types**: Support for escrow and compact settlement patterns
+- **Flexible Authorization**: Multiple authorization mechanisms for different use cases:
+  - **Permit2**: Token approval mechanism used for escrow-based settlement patterns, enabling gasless token approvals
+  - **TheCompact**: Resource lock mechanism that allows users to allocate tokens for specific purposes without transferring custody
+  - **EIP-3009**: Transfer authorization standard enabling gasless transfers via signed messages
+
+### Production-Ready Features
+
+- **High Performance**: Built in Rust for optimal performance in time-sensitive cross-chain operations
+- **Reliable Execution**: Robust error handling and transaction monitoring
+- **Comprehensive Monitoring**: Built-in observability with detailed logging and metrics
+- **Flexible Configuration**: Modular configuration system supporting multiple networks and customization
+
+## Use Cases
+
+### Cross-Chain Asset Transfers
+
+Enable users to seamlessly move assets between different blockchain networks without manual intervention or complex multi-step processes.
+
+### Cross-Chain DeFi Operations
+
+Facilitate complex DeFi operations that span multiple chains, such as borrowing on one chain against collateral on another.
+
+### Automated Market Making
+
+Provide liquidity for cross-chain operations while earning fees from successful intent executions.
+
+### Protocol Integration
+
+Integrate cross-chain functionality into existing DeFi protocols and applications.
+
+### New L2 Onboarding
+
+Help new Layer 2 networks attract liquidity and users by enabling seamless cross-chain transfers. Solvers can provide instant liquidity for users moving assets to new L2s, reducing friction and accelerating network adoption.
+
+## Architecture Highlights
+
+### Modular Design
+
+The solver is built as a collection of specialized components, each handling a specific aspect of the cross-chain execution process. This modularity enables:
+
+- Independent development and testing
+- Easy customization and extension
+- Clear separation of concerns
+- Reliable and maintainable codebase
+
+### Event-Driven Architecture
+
+All components communicate through a centralized event system, ensuring:
+
+- Loose coupling between components
+- Asynchronous processing capabilities
+- Easy addition of new features and integrations
+- Robust error handling and recovery
+
+### Multi-Chain Native
+
+Designed from the ground up to handle multiple EVM chains simultaneously:
+
+- Concurrent monitoring of multiple chains
+- Chain-specific optimizations and configurations
+- Unified interface across different networks
+- Scalable to new blockchain networks
+
+## Next Steps
+
+- **[Quickstart Guide](quickstart.md)**: Get up and running in minutes
+- **[How It Works](how-it-works.md)**: Learn about the solver's execution pipeline and core concepts
+- **[Configuration Guide](configuration.md)**: Advanced setup options and customization

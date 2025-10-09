@@ -1,19 +1,286 @@
----
-title: Quickstart
-description: Build a minimal solver
----
+# Quickstart Guide
 
-Spin up a simple solver that listens and bids.
+This guide will help you get the OIF Solver up and running quickly for testing and development purposes.
 
-### Prerequisites
+## Prerequisites
 
-- Node.js 18+
-- Access to an aggregator endpoint
+Before you begin, ensure you have the following installed:
 
-### Steps
+- **Rust toolchain** (stable) - [Install Rust](https://rustup.rs/)
+- **Foundry** (for local testing) - [Install Foundry](https://book.getfoundry.sh/getting-started/installation)
+- **Git** for cloning the repository
 
-1. Scaffold a TypeScript project
-2. Install SDK (coming soon)
-3. Implement `onIntent` handler
-4. Submit a mock bid and observe selection
+## Installation
 
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/openintentsframework/oif-solver.git
+cd oif-solver
+```
+
+### 2. Build the Project
+
+```bash
+# Build all components (including the solver and demo CLI)
+cargo build
+
+# Or build in release mode for better performance
+cargo build --release
+```
+
+The build process will compile:
+
+- **solver** - The main solver binary for processing cross-chain intents
+- **solver-demo** - The CLI tool for testing and demonstrating the solver
+
+### 3. Run Tests
+
+```bash
+# Run the test suite to ensure everything is working
+cargo test
+```
+
+## Quick Setup with Demo Environment
+
+The fastest way to see the solver in action is using the `solver-demo` CLI tool. This section walks you through a complete setup for local testing.
+
+### 1. Create and Load Configuration
+
+First, create a new configuration file for testing:
+
+```bash
+# Create a new configuration with two local chains (31337, 31338)
+cargo run --bin solver-demo -- init new config/demo.toml
+
+# Load the configuration for local development
+cargo run --bin solver-demo -- init load config/demo.toml --local
+```
+
+This will:
+
+- Generate a configuration template at `config/demo.toml`
+- Initialize a local session in `.oif-demo/`
+- Set up the environment for local testing
+
+### 2. Start Local Blockchain Networks
+
+Start the Anvil chains for testing:
+
+```bash
+# Start two local Anvil instances (one for each chain)
+cargo run --bin solver-demo -- env start
+```
+
+This command will:
+
+- Start origin chain (ID: 31337) on port 8545
+- Start destination chain (ID: 31338) on port 8546
+- Keep them running in the background
+
+### 3. Deploy Smart Contracts
+
+Deploy all required contracts to both chains:
+
+```bash
+# Deploy all contracts (tokens, settlers, oracles)
+cargo run --bin solver-demo -- env deploy --all
+```
+
+This will deploy:
+
+- Test tokens (TokenA, TokenB)
+- Escrow settlers (InputSettler, OutputSettler)
+- Compact settlers (TheCompact, allocators)
+- Oracle contracts for cross-chain verification
+
+### 4. Setup Test Environment
+
+Initialize the environment with test tokens and permissions:
+
+```bash
+# Mint tokens and configure permissions
+cargo run --bin solver-demo -- env setup
+```
+
+This will:
+
+- Mint test tokens to user, solver, and recipient accounts
+- Approve Permit2 allowances
+- Register allocators with TheCompact
+- Validate all deployments
+
+### 5. Start the Solver
+
+In a new terminal window, start the solver:
+
+```bash
+# Run the solver with the configuration
+cargo run --bin solver -- --config config/demo.toml
+```
+
+You should see output indicating the solver has started:
+
+```
+[INFO] OIF Solver starting with config: config/demo.toml
+[INFO] Discovery service started, monitoring chain 31337
+[INFO] Solver ready and monitoring for intents
+```
+
+### 6. Test Cross-Chain Intent Execution
+
+In another terminal, test a complete cross-chain swap:
+
+```bash
+# Build a cross-chain intent (TokenA on chain 31337 → TokenB on chain 31338)
+cargo run --bin solver-demo -- intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TokenA \
+  --to-token TokenB \
+  --amount 10 \
+  --settlement escrow \
+  --auth permit2
+
+# Get a quote from the solver
+cargo run --bin solver-demo -- quote get .oif-demo/requests/get_quote.req.json
+
+# Sign and accept the quote
+cargo run --bin solver-demo -- quote sign .oif-demo/requests/get_quote.res.json
+
+# Submit the signed order
+cargo run --bin solver-demo -- intent submit .oif-demo/requests/post_order.req.json
+```
+
+### 7. Monitor Results
+
+Check token balances to see the cross-chain transfer:
+
+```bash
+# Check all account balances
+cargo run --bin solver-demo -- token balance all
+```
+
+### Building and Submitting Intents
+
+Once you have the environment set up, you can build and submit intents:
+
+```bash
+# Build an intent for a cross-chain swap
+cargo run --bin solver-demo -- intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TokenA \
+  --to-token TokenB \
+  --amount 100 \
+  --settlement escrow \
+  --auth permit2
+```
+
+### Getting and Accepting Quotes
+
+```bash
+# Request a quote from the solver
+cargo run --bin solver-demo -- quote get .oif-demo/requests/get_quote.req.json
+
+# Sign the quote to create a signed order
+cargo run --bin solver-demo -- quote sign .oif-demo/requests/get_quote.res.json
+
+# Submit the signed order to the solver
+cargo run --bin solver-demo -- intent submit .oif-demo/requests/post_order.req.json
+```
+
+### Checking Order Status
+
+```bash
+# Get order status by ID
+cargo run --bin solver-demo -- intent status <order_id>
+```
+
+### Managing Tokens
+
+```bash
+# List all available tokens
+cargo run --bin solver-demo -- token list
+
+# Check token balances for all accounts
+cargo run --bin solver-demo -- token balance all
+
+# Check balances for a specific account
+cargo run --bin solver-demo -- token balance user
+
+# Mint tokens for testing
+cargo run --bin solver-demo -- token mint --chain 31337 --token TokenA --amount 1000
+```
+
+### Using the REST API Directly
+
+You can also interact with the solver via its REST API:
+
+```bash
+# Submit a cross-chain intent
+curl -X POST http://localhost:3000/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order": "0x...",
+    "sponsor": "0x...",
+    "signature": "0x..."
+  }'
+
+# Get order status
+curl http://localhost:3000/api/orders/{order_id}
+
+# Query supported tokens
+curl http://localhost:3000/api/tokens
+```
+
+## Environment Variables
+
+### Logging Configuration
+
+Control logging output with the `RUST_LOG` environment variable:
+
+```bash
+# Debug logs for solver components only
+RUST_LOG=solver_core=debug,solver_delivery=debug,info cargo run --bin solver -- --config config/demo.toml
+
+# Full debug logging (very verbose)
+RUST_LOG=debug cargo run --bin solver -- --config config/demo.toml
+```
+
+### Demo CLI Environment Variables
+
+The `solver-demo` CLI supports loading configuration from a `.env` file. Create one based on the example:
+
+```bash
+# Copy the example environment file
+cp crates/solver-demo/.env.example .env
+
+# Edit with your settings
+# USER_ADDRESS=0x...
+# USER_PRIVATE_KEY=0x...
+# SOLVER_ADDRESS=0x...
+# SOLVER_PRIVATE_KEY=0x...
+# RECIPIENT_ADDRESS=0x...
+```
+
+These environment variables are automatically loaded when you run solver-demo commands.
+
+## Troubleshooting
+
+### Getting Help
+
+- Check the [Configuration Guide](configuration.md) for detailed setup instructions
+- Review logs with `RUST_LOG=debug` for detailed debugging information
+- Use the `--verbose` flag with solver-demo commands for more output
+- Consult the [API Reference](api-reference.md) for API usage details
+
+## Next Steps
+
+Now that you have the solver running:
+
+1. **Explore the CLI**: Run `cargo run -p solver-demo -- --help` to see all available commands and options
+2. **Learn Configuration**: Review the [Configuration Guide](configuration.md) for advanced setup options
+3. **Understand the API**: Read the [API Reference](api-reference.md) to integrate with your applications
+4. **Try Different Settlement Types**: Test with both `--settlement escrow` and `--settlement compact`
+5. **Explore Authorization Schemes**: Compare `--auth permit2` vs `--auth eip3009` for different use cases

@@ -23,22 +23,22 @@ The crate uses a three-layer design:
 
 ```
 ┌─────────────────────────────────────────┐
-│         Application Layer                │
+│         Application Layer               │
 │    (SolverEngine, Handlers)             │
 └────────────────┬────────────────────────┘
                  │
                  ▼
 ┌─────────────────────────────────────────┐
-│      AccountService           │
-│      - Simplified API                    │
-│      - Ownership management              │
+│      AccountService                     │
+│      - Simplified API                   │
+│      - Ownership management             │
 └────────────────┬────────────────────────┘
                  │
                  ▼
 ┌─────────────────────────────────────────┐
 │   AccountInterface (Trait)              │
-│   - Contract definition                  │
-│   - Polymorphic behavior                 │
+│   - Contract definition                 │
+│   - Polymorphic behavior                │
 └────────────────┬────────────────────────┘
                  │
         ┌────────┴────────┐
@@ -237,27 +237,27 @@ private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff8
 
 ```
 ┌────────────────────────────────────────────┐
-│          Solver Application                 │
-│                                             │
-│  1. Load Config                             │
-│     ↓                                       │
-│  2. Get Factory                             │
-│     get_all_implementations()["local"]      │
-│     ↓                                       │
-│  3. Create Implementation                   │
-│     factory(&config) → Box<LocalWallet>     │
-│     ↓                                       │
-│  4. Wrap in Service                         │
-│     AccountService::new(impl)               │
-│     ↓                                       │
-│  5. Share via Arc                           │
-│     Arc::new(service)                       │
-│     ↓                                       │
-│  6. Pass to Components                      │
-│     ├─ SolverEngine                         │
-│     ├─ IntentHandler                        │
-│     ├─ OrderHandler                         │
-│     └─ TokenManager                         │
+│          Solver Application                │
+│                                            │
+│  1. Load Config                            │
+│     ↓                                      │
+│  2. Get Factory                            │
+│     get_all_implementations()["local"]     │
+│     ↓                                      │
+│  3. Create Implementation                  │
+│     factory(&config) → Box<LocalWallet>    │
+│     ↓                                      │
+│  4. Wrap in Service                        │
+│     AccountService::new(impl)              │
+│     ↓                                      │
+│  5. Share via Arc                          │
+│     Arc::new(service)                      │
+│     ↓                                      │
+│  6. Pass to Components                     │
+│     ├─ SolverEngine                        │
+│     ├─ IntentHandler                       │
+│     ├─ OrderHandler                        │
+│     └─ TokenManager                        │
 └────────────────────────────────────────────┘
 ```
 
@@ -299,27 +299,27 @@ Order Validated
 Generate Fill Transaction
       ↓
 ┌─────────────────────────────────┐
-│ OrderHandler                     │
-│                                  │
-│  let tx = order_service          │
+│ OrderHandler                    │
+│                                 │
+│  let tx = order_service         │
 │      .generate_fill_transaction(│
-│          &order                  │
-│      )?;                         │
-│                                  │
-│  let sig = account               │
-│      .sign(&tx)                  │
-│      .await?;                    │
-│      ↓                           │
-│  AccountService::sign()          │
-│      ↓                           │
-│  LocalWallet::sign_transaction() │
-│      ├─ Build TxLegacy           │
-│      ├─ Encode with EIP-155      │
-│      ├─ Hash with Keccak256      │
-│      ├─ ECDSA sign               │
-│      └─ Return signature         │
-│                                  │
-│  delivery.submit(tx, sig)        │
+│          &order                 │
+│      )?;                        │
+│                                 │
+│  let sig = account              │
+│      .sign(&tx)                 │
+│      .await?;                   │
+│      ↓                          │
+│  AccountService::sign()         │
+│      ↓                          │
+│  LocalWallet::sign_transaction()│
+│      ├─ Build TxLegacy          │
+│      ├─ Encode with EIP-155     │
+│      ├─ Hash with Keccak256     │
+│      ├─ ECDSA sign              │
+│      └─ Return signature        │
+│                                 │
+│  delivery.submit(tx, sig)       │
 └─────────────────────────────────┘
       ↓
 Transaction Broadcast

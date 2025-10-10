@@ -1,19 +1,472 @@
----
-title: Quickstart
-description: Build a minimal solver
----
+# Quickstart Guide
 
-Spin up a simple solver that listens and bids.
+This guide will help you get the OIF Solver up and running quickly for testing and development purposes.
 
-### Prerequisites
+## Prerequisites
 
-- Node.js 18+
-- Access to an aggregator endpoint
+Before you begin, ensure you have the following installed:
 
-### Steps
+- **Rust toolchain** (stable) - [Install Rust](https://rustup.rs/)
+- **Foundry** (for local testing) - [Install Foundry](https://book.getfoundry.sh/getting-started/installation)
+- **Git** for cloning the repository
 
-1. Scaffold a TypeScript project
-2. Install SDK (coming soon)
-3. Implement `onIntent` handler
-4. Submit a mock bid and observe selection
+## Installation
 
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/openintentsframework/oif-solver.git
+cd oif-solver
+```
+
+### 2. Build the Project
+
+```bash
+# Build all components (including the solver and demo CLI)
+cargo build
+
+# Or build in release mode for better performance
+cargo build --release
+```
+
+The build process will compile:
+
+- **solver** - The main solver binary for processing cross-chain intents
+- **solver-demo** - The CLI tool for testing and demonstrating the solver
+
+### 3. Run Tests
+
+```bash
+# Run the test suite to ensure everything is working
+cargo test
+```
+
+## Environment Variables
+
+Before setting up your development environment, you'll need to configure some environment variables. The solver and demo CLI use these for account management and API access.
+
+### Demo CLI Environment Variables
+
+The `solver-demo` CLI supports loading configuration from a `.env` file. Create one based on the example:
+
+```bash
+# Copy the example environment file
+cp crates/solver-demo/.env.example .env
+
+# Edit with your settings
+# USER_ADDRESS=0x...
+# USER_PRIVATE_KEY=0x...
+# SOLVER_ADDRESS=0x...
+# SOLVER_PRIVATE_KEY=0x...
+# RECIPIENT_ADDRESS=0x...
+```
+
+These environment variables are automatically loaded when you run solver-demo commands.
+
+### Logging Configuration
+
+Control logging output with the `RUST_LOG` environment variable:
+
+```bash
+# Debug logs for solver components only
+RUST_LOG=solver_core=debug,solver_delivery=debug,info cargo run --bin solver -- --config config/demo.toml
+
+# Full debug logging (very verbose)
+RUST_LOG=debug cargo run --bin solver -- --config config/demo.toml
+```
+
+## Quick Setup - Local Environment
+
+The fastest way to see the solver in action is using the `solver-demo` CLI tool with local Anvil chains. This section walks you through a complete setup for local testing.
+
+### 1. Create and Load Configuration
+
+First, create a new configuration file for testing:
+
+```bash
+# Create a new configuration with two local chains (31337, 31338)
+cargo run --bin solver-demo -- init new config/demo.toml
+
+# Load the configuration for local development
+cargo run --bin solver-demo -- init load config/demo.toml --local
+```
+
+This will:
+
+- Generate a configuration template at `config/demo.toml`
+- Initialize a local session in `.oif-demo/`
+- Set up the environment for local testing
+
+### 2. Start Local Blockchain Networks
+
+Start the Anvil chains for testing:
+
+```bash
+# Start two local Anvil instances (one for each chain)
+cargo run --bin solver-demo -- env start
+```
+
+This command will:
+
+- Start origin chain (ID: 31337) on port 8545
+- Start destination chain (ID: 31338) on port 8546
+- Keep them running in the background
+
+### 3. Deploy Smart Contracts
+
+Deploy all required contracts to both chains:
+
+```bash
+# Deploy all contracts (tokens, settlers, oracles)
+cargo run --bin solver-demo -- env deploy --all
+```
+
+This will deploy:
+
+- Test tokens (TokenA, TokenB)
+- Escrow settlers (InputSettler, OutputSettler)
+- Compact settlers (TheCompact, allocators)
+- Oracle contracts for cross-chain verification
+
+### 4. Setup Test Environment
+
+Initialize the environment with test tokens and permissions:
+
+```bash
+# Mint tokens and configure permissions
+cargo run --bin solver-demo -- env setup
+```
+
+This will:
+
+- Mint test tokens to user, solver, and recipient accounts
+- Approve Permit2 allowances
+- Register allocators with TheCompact
+- Validate all deployments
+
+### 5. Start the Solver
+
+In a new terminal window, start the solver:
+
+```bash
+# Run the solver with the configuration
+cargo run --bin solver -- --config config/demo.toml
+```
+
+You should see output indicating the solver has started:
+
+```
+[INFO] OIF Solver starting with config: config/demo.toml
+[INFO] Discovery service started, monitoring chain 31337
+[INFO] Solver ready and monitoring for intents
+```
+
+### 6. Test Cross-Chain Intent Execution
+
+In another terminal, test a complete cross-chain swap:
+
+```bash
+# Build a cross-chain intent (TokenA on chain 31337 → TokenB on chain 31338)
+cargo run --bin solver-demo -- intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TokenA \
+  --to-token TokenB \
+  --amount 10 \
+  --settlement escrow \
+  --auth permit2
+
+# Get a quote from the solver
+cargo run --bin solver-demo -- quote get .oif-demo/requests/get_quote.req.json
+
+# Sign and accept the quote
+cargo run --bin solver-demo -- quote sign .oif-demo/requests/get_quote.res.json
+
+# Submit the signed order
+cargo run --bin solver-demo -- intent submit .oif-demo/requests/post_order.req.json
+```
+
+### 7. Monitor Results
+
+Check token balances to see the cross-chain transfer:
+
+```bash
+# Check all account balances
+cargo run --bin solver-demo -- token balance all
+```
+
+### Building and Submitting Intents
+
+Once you have the environment set up, you can build and submit intents:
+
+```bash
+# Build an intent for a cross-chain swap
+cargo run --bin solver-demo -- intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TokenA \
+  --to-token TokenB \
+  --amount 100 \
+  --settlement escrow \
+  --auth permit2
+```
+
+### Getting and Accepting Quotes
+
+```bash
+# Request a quote from the solver
+cargo run --bin solver-demo -- quote get .oif-demo/requests/get_quote.req.json
+
+# Sign the quote to create a signed order
+cargo run --bin solver-demo -- quote sign .oif-demo/requests/get_quote.res.json
+
+# Submit the signed order to the solver
+cargo run --bin solver-demo -- intent submit .oif-demo/requests/post_order.req.json
+```
+
+### Checking Order Status
+
+```bash
+# Get order status by ID
+cargo run --bin solver-demo -- intent status <order_id>
+```
+
+### Managing Tokens
+
+```bash
+# List all available tokens
+cargo run --bin solver-demo -- token list
+
+# Check token balances for all accounts
+cargo run --bin solver-demo -- token balance all
+
+# Check balances for a specific account
+cargo run --bin solver-demo -- token balance user
+
+# Mint tokens for testing
+cargo run --bin solver-demo -- token mint --chain 31337 --token TokenA --amount 1000
+```
+
+## Quick Setup - Testnet Environment
+
+For production-like testing, you can run the solver on public testnets. This section walks you through setting up the solver on Optimism Sepolia and Base Sepolia using USDC for testing.
+
+### Prerequisites for Testnet
+
+Before starting, ensure you have:
+
+- **RPC Provider Access**: Get API keys from providers like [Alchemy](https://www.alchemy.com/), [Infura](https://www.infura.io/), or use public endpoints
+- **Testnet ETH**: Obtain testnet ETH from faucets for gas fees:
+  - [Optimism Sepolia Faucet](https://www.alchemy.com/faucets/optimism-sepolia)
+  - [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia)
+- **Testnet USDC**: Obtain testnet USDC from Circle's testnet faucet or bridge
+- **Private Keys**: Generate or use existing private keys for your solver, user, and recipient accounts
+
+### 1. Configure Environment Variables
+
+Set up your environment variables with real accounts and RPC endpoints:
+
+```bash
+# Copy the example environment file
+cp crates/solver-demo/.env.example .env
+
+# Edit .env with your testnet configuration
+# Example:
+# USER_ADDRESS=0x1234...
+# USER_PRIVATE_KEY=0xabcd...
+# SOLVER_ADDRESS=0x5678...
+# SOLVER_PRIVATE_KEY=0xef01...
+# RECIPIENT_ADDRESS=0x9abc...
+#
+# RPC endpoints
+# ORIGIN_RPC_URL=https://opt-sepolia.g.alchemy.com/v2/YOUR_API_KEY
+# DEST_RPC_URL=https://base-sepolia.g.alchemy.com/v2/YOUR_API_KEY
+```
+
+### 2. Configure and Load Testnet Configuration
+
+The repository includes a pre-configured `config/testnet.toml` file with deployed contract addresses for OP Sepolia (11155420) and Base Sepolia (84532).
+
+The provided configuration includes:
+
+- Pre-deployed USDC token addresses on both testnets
+- Settlement contract addresses (InputSettler, OutputSettler, TheCompact)
+- Hyperlane mailbox and oracle configurations
+- Default public RPC endpoints
+
+Review `config/testnet.toml` and `config/testnet/networks.toml` and customize if needed (e.g., to use your own RPC URLs with API keys or your deployed contracts).
+
+Once your configuration is ready, initialize the session:
+
+```bash
+# Load the testnet configuration
+cargo run --bin solver-demo -- init load config/testnet.toml
+```
+
+This will:
+
+- Initialize a session in `.oif-demo/`
+- Set up the environment for testnet testing
+- Prepare the solver to use the configured contracts and networks
+
+**Note**: Unlike local setup, you don't need to use the `--local` flag.
+
+### 3. Fund Your Accounts
+
+Ensure your solver and user accounts have both testnet ETH and USDC on both chains:
+
+```bash
+# Check your account balances
+cargo run --bin solver-demo -- account balance all
+
+# Check USDC balances specifically
+cargo run --bin solver-demo -- token balance all
+```
+
+Use the faucets to fund your accounts. You'll need:
+
+- **ETH**: For gas fees on both chains
+- **USDC**: For testing cross-chain swaps
+
+### 4. Contract Configuration
+
+The `config/testnet.toml` file already includes pre-deployed contract addresses for USDC and settlement contracts on both OP Sepolia and Base Sepolia testnets.
+
+**Optional: Deploy your own contracts**
+
+If you want to deploy custom contracts for testing you can use the Foundry command:
+
+```bash
+forge create path-to-Contract.sol:Contract \
+    --private-key PK \
+    --rpc-url RPC_URL \
+    --broadcast
+```
+
+### 5. Setup Permissions
+
+Configure necessary approvals for USDC transfers:
+
+```bash
+# Set up approvals and permissions
+cargo run --bin solver-demo -- env setup
+```
+
+This will:
+
+- Approve Permit2 for USDC transfers
+- Register allocators with TheCompact if using compact settlement
+- Validate contract deployments
+- Ensure accounts have proper permissions
+
+### 6. Start the Solver
+
+In a new terminal window, start the solver:
+
+```bash
+# Run the solver with testnet configuration
+cargo run --bin solver -- --config config/testnet.toml
+```
+
+You should see output indicating the solver has started and is monitoring the testnet chains:
+
+```
+[INFO] OIF Solver starting with config: config/testnet.toml
+[INFO] Discovery service started, monitoring chain 11155420
+[INFO] Discovery service started, monitoring chain 84532
+[INFO] Solver ready and monitoring for intents
+```
+
+### 7. Test Cross-Chain Intent Execution
+
+In another terminal, test a cross-chain USDC transfer:
+
+```bash
+# Build a cross-chain intent (USDC on OP Sepolia → USDC on Base Sepolia)
+cargo run --bin solver-demo -- intent build \
+  --from-chain 11155420 \
+  --to-chain 84532 \
+  --from-token USDC \
+  --to-token USDC \
+  --amount 10 \
+  --settlement hyperlane \
+  --auth permit2
+
+# Get a quote from the solver
+cargo run --bin solver-demo -- quote get .oif-demo/requests/get_quote.req.json
+
+# Sign and accept the quote
+cargo run --bin solver-demo -- quote sign .oif-demo/requests/get_quote.res.json
+
+# Submit the signed order
+cargo run --bin solver-demo -- intent submit .oif-demo/requests/post_order.req.json
+```
+
+**Note**: Testnet execution will be slower than local due to actual block times and cross-chain messaging delays.
+
+### 8. Monitor Results
+
+Check the execution progress:
+
+```bash
+# Check order status
+cargo run --bin solver-demo -- intent status <order_id>
+
+# Check USDC balances after execution
+cargo run --bin solver-demo -- token balance all
+```
+
+### Testnet Considerations
+
+When running on testnets, keep in mind:
+
+- **Block Times**: Testnet blocks take real time (2s for OP Sepolia, 2s for Base Sepolia)
+- **Cross-Chain Delays**: Hyperlane messaging can take several minutes
+- **Gas Costs**: While free, you need testnet ETH from faucets
+- **RPC Rate Limits**: Public endpoints may have rate limits; use dedicated API keys for better performance
+- **Finality**: The solver waits for transaction finality, which takes longer on testnets
+- **USDC Availability**: Ensure you have sufficient testnet USDC on both chains before testing
+
+### Using the REST API Directly
+
+You can also interact with the solver via its REST API:
+
+```bash
+# Submit a cross-chain intent
+curl -X POST http://localhost:3000/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order": "0x...",
+    "sponsor": "0x...",
+    "signature": "0x..."
+  }'
+
+# Get order status
+curl http://localhost:3000/api/orders/{order_id}
+
+# Query supported tokens
+curl http://localhost:3000/api/tokens
+```
+
+## Troubleshooting
+
+### Getting Help
+
+- Check the [Configuration Guide](configuration.md) for detailed setup instructions
+- Review logs with `RUST_LOG=debug` for detailed debugging information
+- Use the `--verbose` flag with solver-demo commands for more output
+- Consult the [API Reference](api-reference.md) for API usage details
+
+## Next Steps
+
+Now that you have the solver running:
+
+1. **Try Both Environments**:
+   - Start with local environment for quick iteration and testing
+   - Move to testnet when you need production-like behavior
+2. **Explore the CLI**: Run `cargo run -p solver-demo -- --help` to see all available commands and options
+3. **Learn Configuration**: Review the [Configuration Guide](configuration.md) for advanced setup options
+4. **Understand the API**: Read the [API Reference](api-reference.md) to integrate with your applications
+5. **Try Different Settlement Types**:
+   - Local: Test with both `--settlement escrow` and `--settlement compact`
+   - Testnet: Test with `--settlement hyperlane` for real cross-chain messaging

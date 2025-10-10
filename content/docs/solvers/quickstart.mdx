@@ -195,35 +195,6 @@ Check token balances to see the cross-chain transfer:
 cargo run --bin solver-demo -- token balance all
 ```
 
-### Building and Submitting Intents
-
-Once you have the environment set up, you can build and submit intents:
-
-```bash
-# Build an intent for a cross-chain swap
-cargo run --bin solver-demo -- intent build \
-  --from-chain 31337 \
-  --to-chain 31338 \
-  --from-token TokenA \
-  --to-token TokenB \
-  --amount 100 \
-  --settlement escrow \
-  --auth permit2
-```
-
-### Getting and Accepting Quotes
-
-```bash
-# Request a quote from the solver
-cargo run --bin solver-demo -- quote get .oif-demo/requests/get_quote.req.json
-
-# Sign the quote to create a signed order
-cargo run --bin solver-demo -- quote sign .oif-demo/requests/get_quote.res.json
-
-# Submit the signed order to the solver
-cargo run --bin solver-demo -- intent submit .oif-demo/requests/post_order.req.json
-```
-
 ### Checking Order Status
 
 ```bash
@@ -389,7 +360,7 @@ cargo run --bin solver-demo -- intent build \
   --from-token USDC \
   --to-token USDC \
   --amount 10 \
-  --settlement hyperlane \
+  --settlement escrow \
   --auth permit2
 
 # Get a quote from the solver

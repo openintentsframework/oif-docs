@@ -4,15 +4,14 @@ The OIF Solver operates through a multi-stage pipeline that handles the complete
 
 ## The Intent Execution Pipeline
 
-The solver processes intents through seven distinct stages:
+The solver processes intents through six distinct stages:
 
 1. **Intent Discovery** - Monitor blockchain networks for new intents
 2. **Quote Generation** - Generate execution quotes via REST API (optional)
 3. **Intent Validation** - Parse and validate intent data
 4. **Profitability Analysis** - Calculate costs and verify profitability
-5. **Execution Strategy** - Determine optimal execution timing
-6. **Transaction Execution** - Submit and monitor transactions
-7. **Settlement Processing** - Complete cross-chain settlement
+5. **Transaction Execution** - Submit and monitor transactions
+6. **Settlement Processing** - Complete cross-chain settlement
 
 ## 1. Intent Discovery
 
@@ -20,7 +19,6 @@ The solver monitors configured blockchain networks for new intent events. It can
 
 - **On-chain monitoring**: Direct blockchain event monitoring for intents submitted to smart contracts
 - **Off-chain APIs**: REST API endpoints for intent submission and quote requests
-- **Multiple sources**: Simultaneous monitoring of various discovery channels
 
 The discovery system runs continuously, watching for new `open` on-chain events across all configured chains.
 
@@ -30,20 +28,29 @@ Before executing intents, the solver can generate quotes for users through its R
 
 ### Quote Request Flow
 
-1. User submits intent parameters to the solver's REST API
-2. Solver calculates execution costs and generates a quote
-3. User reviews the quote details (amounts, fees, ETA)
-4. User signs the order data using EIP-712
-5. User submits the signed order on-chain or back to the solver
+1. User submits intent parameters via `POST /api/quotes` with:
+   - User address (ERC-7930 format: `chainId:address`)
+   - Intent details (inputs, outputs, swap type)
+   - Supported order types (e.g., `oif-escrow-v0`, `oif-resource-lock-v0`, `oif-3009-v0`)
+   - Optional preferences (price, speed, trust-minimization)
+2. Solver validates the request and checks capabilities
+3. Solver calculates costs and generates one or more quote options
+4. User receives quotes with complete EIP-712 order structures
+5. User signs the chosen order using EIP-712
+6. User submits the signed order to `/api/orders` with the quote ID
 
 ### Quote Structure
 
 Each quote contains:
 
-- **Orders**: Complete order data ready for on-chain submission
-- **Costs**: Detailed breakdown of gas fees, commissions, and operational expenses
-- **ETA**: Estimated time for complete cross-chain execution
-- **Validity Period**: Timestamp indicating quote expiration
+- **Order**: Complete order structure with EIP-712 signature payload (type, domain, primaryType, message, types)
+- **Failure Handling**: The failure handling mode (refund-automatic, refund-claim, needs-new-signature)
+- **Partial Fill**: Boolean indicating whether partial fills are supported
+- **Valid Until**: Unix timestamp when the quote expires
+- **ETA**: Estimated time for complete cross-chain execution in seconds
+- **Quote ID**: Unique identifier for accepting the quote
+- **Provider**: Solver identifier (e.g., "oif-solver")
+- **Preview**: Informational preview of input/output amounts that must be verified against the order
 
 ### Quote Signing (EIP-712)
 
@@ -53,6 +60,15 @@ Before submitting quotes to the solver for execution, users must sign the order 
 - **User Responsibility**: Always carefully review what you are signing - verify the token amounts, addresses, chains, and all order parameters
 - **Authorization**: The signature authorizes the solver to execute the cross-chain intent on your behalf
 - **Security**: Only sign quotes from trusted sources and verify all details before signing
+
+### Quote Validation
+
+**IMPORTANT**: The `preview` field in quotes is for informational purposes only. Users and integrators **must** validate that the preview data matches the actual EIP-712 order structure:
+
+- **Verify Inputs**: Check that preview input amounts, tokens, and users match the signed EIP-712 message
+- **Verify Outputs**: Confirm that preview output amounts, tokens, and receivers align with the order outputs
+- **Cross-Reference**: Always validate preview against `order.payload.message` before signing
+- **Security Note**: Malicious solvers could provide mismatched preview data - the EIP-712 signature is what you're actually authorizing
 
 ## 3. Intent Validation
 
@@ -139,48 +155,19 @@ Each intent must meet the configured minimum profitability threshold (`min_profi
 
 This ensures the solver only executes intents that provide adequate compensation for the operational costs and risks involved.
 
-## 5. Execution Strategy
+## 5. Transaction Execution
 
-The solver evaluates when and how to execute orders based on multiple factors:
-
-### Market Conditions
-
-- **Gas Prices**: Wait for favorable gas prices to reduce execution costs
-- **Liquidity**: Ensure sufficient liquidity is available at the desired price
-- **Timing**: Consider network congestion and optimal execution windows
-
-### Execution Strategies
-
-Configurable logic allows operators to implement custom execution strategies:
-
-- **Immediate Execution**: Execute as soon as profitability is confirmed
-- **Gas-Optimized**: Wait for gas prices to fall below a threshold
-- **Batch Execution**: Group multiple intents for gas efficiency
-- **Custom Logic**: Implement domain-specific execution rules
-
-### Risk Assessment
-
-Before execution, the solver performs final safety checks:
-
-- Verify account balances and approvals
-- Confirm transaction parameters are still valid
-- Check for any market changes that might affect profitability
-- Validate settlement contract state
-
-## 6. Transaction Execution
-
-When the execution strategy determines it's time to execute, the solver handles the complete transaction lifecycle:
+Once profitability is confirmed, the solver handles the complete transaction lifecycle:
 
 ### Transaction Generation
 
 - Generate the necessary blockchain transactions (fill, post-fill, etc.)
 - Set appropriate gas parameters based on network conditions
-- Sign transactions using the configured wallet/signer
+- Sign transactions using the configured Solver wallet/signer
 
 ### Transaction Submission
 
 - Submit transactions to the appropriate blockchain networks
-- Handle nonce management and transaction replacement if needed
 - Monitor mempool for transaction status
 
 ### Transaction Monitoring
@@ -188,16 +175,12 @@ When the execution strategy determines it's time to execute, the solver handles 
 - Track transaction confirmation across multiple blocks
 - Handle transaction failures and retries with exponential backoff
 - Update internal state based on transaction outcomes
-- Log detailed execution metrics for monitoring
 
 ### Error Recovery
 
-- Detect failed transactions and determine root cause
-- Implement retry logic with configurable parameters
-- Revert state and release locked resources on permanent failure
-- Alert operators to critical execution issues
+- On startup, the solver detects previously failed transactions and retries them automatically
 
-## 7. Settlement Processing
+## 6. Settlement Processing
 
 After successful execution on the destination chain, the solver completes the cross-chain settlement:
 
@@ -205,15 +188,7 @@ After successful execution on the destination chain, the solver completes the cr
 
 - Monitor for fill transaction confirmation
 - Extract execution proofs from transaction receipts
-- Validate fill amounts match expected values
 - Store proof data for claim submission
-
-### Dispute Period Monitoring
-
-- Track settlement contract dispute periods
-- Wait for required confirmation blocks
-- Monitor for any dispute transactions
-- Handle dispute resolution if needed
 
 ### Claim Submission
 
@@ -227,9 +202,7 @@ When settlement conditions are met:
 ### Settlement Completion
 
 - Update intent status to completed
-- Record final profit/loss metrics
 - Release any locked resources
-- Archive execution data for analysis
 
 ## Authorization Mechanisms
 

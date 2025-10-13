@@ -26,91 +26,8 @@ All components communicate through a centralized event system, enabling:
 Built from the ground up for cross-chain operations:
 
 - **Concurrent Monitoring**: Simultaneously monitor multiple blockchain networks
-- **Chain-Specific Optimizations**: Each network can have tailored configurations
 - **Unified Interface**: Consistent API regardless of the underlying blockchain
-- **Future-Proof**: Easy to add support for new blockchain networks
-
-## Architectural Decisions and Trade-offs
-
-### Event-Driven vs. Request-Response
-
-**Decision**: Use event-driven architecture for inter-component communication.
-
-**Rationale:**
-
-- Cross-chain operations are inherently asynchronous with variable latency
-- Components need to react to blockchain events in real-time
-- Enables loose coupling between services for better maintainability
-
-**Trade-offs:**
-
-- **Benefit**: Better scalability and decoupling; easier to add new components
-- **Cost**: Increased complexity in tracking state transitions; harder to debug event flows
-- **Mitigation**: Comprehensive event logging and state machine visualization
-
-### Pluggable Implementations
-
-**Decision**: Use factory pattern with runtime-configurable implementations.
-
-**Rationale:**
-
-- Support multiple order standards (EIP-7683, EIP-7930, custom protocols)
-- Allow different execution strategies without code changes
-- Enable testing with mock implementations
-
-**Trade-offs:**
-
-- **Benefit**: Maximum flexibility; easy to extend with new protocols
-- **Cost**: Additional abstraction layer; slight runtime overhead from dynamic dispatch
-- **Mitigation**: Clear trait boundaries; compile-time type safety where possible
-
-### Storage Strategy
-
-**Decision**: File-based storage with TTL management and planned database support.
-
-**Rationale:**
-
-- Simple deployment without external dependencies
-- Sufficient for current scale (hundreds of orders per hour)
-- Path to scale via pluggable storage backends
-
-**Trade-offs:**
-
-- **Benefit**: Zero infrastructure dependencies; easy local development
-- **Cost**: Limited query capabilities; not suitable for high-frequency operations
-- **Mitigation**: Pluggable interface allows migration to databases when needed
-
-### Consistency vs. Availability
-
-**Decision**: Prioritize consistency for order state; availability for discovery.
-
-**Rationale:**
-
-- Order execution requires strict state consistency to prevent double-fills
-- Discovery can tolerate brief unavailability without fund loss
-- Settlement validation demands deterministic state
-
-**Trade-offs:**
-
-- **Benefit**: Guarantees financial correctness; prevents loss of funds
-- **Cost**: May miss opportunities during network partitions
-- **Mitigation**: Transaction monitoring with configurable timeouts; graceful degradation
-
-### Monorepo with Multiple Crates
-
-**Decision**: Organize code as a monorepo with separate Rust crates per component.
-
-**Rationale:**
-
-- Enforces clear boundaries between components
-- Enables independent testing and compilation
-- Facilitates code reuse across different deployment modes
-
-**Trade-offs:**
-
-- **Benefit**: Strong separation of concerns; reusable components
-- **Cost**: More complex build configuration; inter-crate dependency management
-- **Mitigation**: Workspace-level dependency management; clear versioning strategy
+- **Extensible**: Easy to add support for new blockchain networks
 
 ## High-Level Architecture
 
@@ -267,7 +184,6 @@ Provides persistent state management with TTL support.
 - Configurable TTL for different data types
 - Automatic cleanup of expired data
 - Multiple backend implementations (file, future: database)
-- Atomic operations for critical data
 
 #### Account Service (solver-account)
 
@@ -297,8 +213,7 @@ Manages asset pricing and currency conversions for profitability calculations.
 
 **Features:**
 
-- Pluggable pricing oracle implementations (CoinGecko, mock)
-- Multi-hop currency conversions (e.g., ETH → USD → SOL)
+- Pluggable pricing oracle implementations
 - Wei to fiat currency conversions
 - Configurable commission and buffer rates
 - Trading pair support and validation
@@ -397,33 +312,40 @@ Orders progress through defined states with clear transitions:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Discovered: Intent Discovered
-    Discovered --> Validated: Intent Validation
-    Validated --> Pending: Strategy Evaluation
-    Pending --> Executing: Execution Decision
+    [*] --> Created: Order Created
+    Created --> Pending: Prepare Transaction
+    Created --> Executing: Direct Execution
+    Pending --> Executing: Prepare Confirmed
     Executing --> Executed: Fill Confirmed
-    Executed --> PostFilled: Post-Fill Complete
-    PostFilled --> PreClaimed: Pre-Claim Complete
+    Executed --> PostFilled: Post-Fill Required
+    Executed --> Settled: Ready for Settlement
+    PostFilled --> Settled: Post-Fill Complete
+    Settled --> PreClaimed: Pre-Claim Required
+    Settled --> Finalized: Claim Confirmed
     PreClaimed --> Finalized: Claim Confirmed
     Finalized --> [*]
 
-    Validated --> Failed: Validation Error
-    Pending --> Failed: Strategy Rejection
-    Executing --> Failed: Execution Error
+    Created --> Failed: Prepare Failed
+    Pending --> Failed: Execution Failed
+    Executing --> Failed: Fill Failed
+    Executed --> Failed: Post-Fill Failed
+    PostFilled --> Failed: Settlement Failed
+    Settled --> Failed: Claim Failed
+    PreClaimed --> Failed: Finalization Failed
     Failed --> [*]
 ```
 
 **State Descriptions:**
 
-- **Discovered**: Intent received but not yet processed
-- **Validated**: Intent successfully parsed and validated
-- **Pending**: Awaiting execution decision from strategy
-- **Executing**: Fill transaction in progress
-- **Executed**: Fill transaction confirmed
-- **PostFilled**: Post-fill processing completed
-- **PreClaimed**: Pre-claim transaction completed (if required)
-- **Finalized**: Order fully completed with claim
-- **Failed**: Order failed at some stage
+- **Created**: Order has been created but not yet prepared for execution
+- **Pending**: Prepare transaction has been submitted and is awaiting confirmation
+- **Executing**: Order is currently executing (prepare confirmed, fill transaction in progress)
+- **Executed**: Fill transaction has been confirmed on the destination chain
+- **PostFilled**: Post-fill transaction has been completed (optional state for certain order types)
+- **Settled**: Order is ready for claiming rewards on the origin chain
+- **PreClaimed**: Pre-claim transaction has been completed (optional state for certain settlement types)
+- **Finalized**: Order is fully completed with claim transaction confirmed (terminal state)
+- **Failed**: Order execution failed at some stage (terminal state)
 
 ## System Boundaries and Integration Points
 
@@ -490,5 +412,3 @@ The OIF Solver system relies on several external components and services:
 2. **Service Level**: Services aggregate and transform component errors
 3. **Core Level**: Core engine handles workflow errors and recovery
 4. **Application Level**: Top-level error handling for unrecoverable errors
-
-This architecture provides a solid foundation for reliable, scalable cross-chain intent execution while remaining flexible for future requirements and enhancements.

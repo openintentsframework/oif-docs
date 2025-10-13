@@ -1,0 +1,214 @@
+---
+title: Solver Crates
+description: Detailed documentation for each OIF Solver crate
+---
+
+# Solver Crates
+
+This section provides in-depth documentation for each crate in the OIF Solver system. Each crate is documented with its purpose, architecture, integration patterns, and implementation guides.
+
+## Foundation Crates
+
+Foundation crates provide the basic building blocks used throughout the solver system.
+
+<Cards>
+  <Card title="solver-types" href="/docs/solvers/crates/solver-types" description="Foundational type system and shared data structures" />
+  <Card title="solver-config" href="/docs/solvers/crates/solver-config" description="Configuration management and validation" />
+</Cards>
+
+### solver-types
+
+The foundational type system for OIF Solver. Provides blockchain primitives, cross-chain standards (EIP-7683, ERC-7930), event system for inter-service communication, and utilities for address conversion and EIP-712 operations.
+
+**Key Features:**
+- OrderParsable trait for extensibility across standards
+- Event system for asynchronous service communication
+- InteropAddress for cross-chain addressing
+- ConfigSchema for plugin validation
+- Provider factories for RPC abstraction
+
+### solver-config
+
+Type-safe configuration management with multi-file loading, environment variable resolution, and comprehensive validation. Handles all solver subsystem configurations from TOML files.
+
+**Key Features:**
+- Multi-file configuration with include directives
+- Environment variable resolution with defaults
+- Settlement coverage validation
+- Builder pattern for testing
+- Fail-fast error handling
+
+## Business Logic Crates
+
+Business logic crates implement the core functionality of the solver.
+
+<Cards>
+  <Card title="solver-account" href="/docs/solvers/crates/solver-account" description="Cryptographic account management and signing operations" />
+  <Card title="solver-discovery" href="/docs/solvers/crates/solver-discovery" description="Intent discovery from on-chain events and HTTP APIs" />
+</Cards>
+
+## Infrastructure Crates
+
+Infrastructure crates provide low-level blockchain interaction capabilities.
+
+<Cards>
+  <Card title="solver-delivery" href="/docs/solvers/crates/solver-delivery" description="Transaction delivery and monitoring across multiple blockchains" />
+</Cards>
+
+### solver-account
+
+Manages cryptographic accounts and signing operations. Provides unified interface for different signing backends (local wallets, KMS, vault systems) while maintaining security boundaries.
+
+**Key Features:**
+- EIP-155 compliant transaction signing
+- EIP-191 compliant message signing
+- Pluggable account implementations
+- Private key protection with SecretString
+- Factory pattern for extensibility
+
+### solver-discovery
+
+Intent ingestion layer that discovers EIP-7683 cross-chain orders from multiple sources. Monitors blockchain events and accepts HTTP submissions, normalizing them into unified Intent format.
+
+**Key Features:**
+- On-chain event monitoring (polling and WebSocket)
+- Off-chain HTTP API for direct submissions
+- Multi-chain parallel monitoring
+- Order validation and normalization
+- Pluggable discovery implementations
+
+### solver-delivery
+
+Transaction delivery and monitoring for blockchain networks. Manages transaction submission across multiple EVM-compatible chains with automatic retry logic and asynchronous confirmation tracking.
+
+**Key Features:**
+- Multi-chain transaction submission
+- Asynchronous monitoring with callbacks
+- Balance and allowance queries
+- Gas estimation and management
+- Pluggable blockchain implementations
+
+## Architecture
+
+All crates follow a common documentation pattern:
+
+1. **Purpose & Overview** - What the crate does and why it exists
+2. **Core Features** - Main functionality and abstractions
+3. **Integration Architecture** - How it connects to other crates
+4. **Implementation Guide** - How to extend or customize
+5. **Best Practices** - Common patterns and pitfalls
+
+## Design Principles
+
+### Plugin Architecture
+
+Most crates use a trait-based plugin system enabling:
+- Runtime selection of implementations
+- Easy extensibility without modifying core code
+- Configuration-driven behavior
+- Testing with mock implementations
+
+### Configuration-Driven
+
+All crates are configured through:
+- TOML configuration files
+- Environment variable substitution
+- Schema-based validation
+- Type-safe parsing
+
+### Async-First
+
+Built for high-performance async operations:
+- Tokio-based async runtime
+- Non-blocking I/O
+- Channel-based communication
+- Parallel task execution
+
+### Type Safety
+
+Strong typing throughout:
+- Compile-time guarantees
+- Enum-based state machines
+- Trait objects for polymorphism
+- Zero-cost abstractions
+
+## Getting Started
+
+### For Understanding the System
+
+1. Start with **solver-types** to understand the foundational data structures
+2. Read **solver-config** to see how everything is configured
+3. Explore **solver-discovery** to understand how orders enter the system
+4. Study **solver-account** to see how transactions are signed
+
+### For Extending the System
+
+1. Review the **Implementation Guide** section in each crate
+2. Study existing implementations as examples
+3. Follow the factory pattern for registration
+4. Test with the configuration builder
+
+### For Integration
+
+Each crate provides:
+- Clear trait interfaces
+- Factory functions for instantiation
+- Configuration schemas
+- Integration examples
+
+## Common Patterns
+
+### Service Initialization
+
+```rust
+// 1. Load configuration
+let config = Config::from_file("config.toml").await?;
+
+// 2. Create services using factories
+let account = create_account_service(&config.account)?;
+let discovery = create_discovery_service(&config.discovery, &config.networks)?;
+
+// 3. Start services
+discovery.start_all(intent_sender).await?;
+```
+
+### Event Communication
+
+```rust
+// Publisher
+event_bus.publish(SolverEvent::Discovery(
+    DiscoveryEvent::IntentDiscovered { intent }
+));
+
+// Subscriber
+while let Some(event) = event_rx.recv().await {
+    match event {
+        SolverEvent::Discovery(DiscoveryEvent::IntentDiscovered { intent }) => {
+            // Handle intent
+        }
+    }
+}
+```
+
+### Error Handling
+
+```rust
+pub enum ServiceError {
+    Configuration(String),    // Config/validation errors
+    Runtime(String),          // Runtime operation errors
+    Implementation(String),   // Backend-specific errors
+}
+```
+
+## Next Steps
+
+Choose a crate to explore based on your needs:
+
+- **Building a solver?** Start with solver-types and solver-config
+- **Adding custom discovery?** See solver-discovery implementation guide
+- **Integrating with KMS?** Check solver-account for signing backends
+- **Understanding data flow?** Read solver-types event system
+- **Submitting transactions?** Explore solver-delivery for blockchain interaction
+
+Each crate's documentation includes complete code examples and integration patterns.
+

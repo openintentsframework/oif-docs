@@ -29,7 +29,18 @@ When JWT authentication is enabled, include the token in the `Authorization` hea
 curl -X POST http://localhost:3000/api/orders \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"order": "0x...", "sponsor": "0x...", "signature": "0x..."}'
+  -d '{
+    "order": {
+      "type": "oif-escrow-v0",
+      "payload": {
+        "signatureType": "eip712",
+        "domain": {...},
+        "primaryType": "PermitBatchWitnessTransferFrom",
+        "message": {...}
+      }
+    },
+    "signature": "0x..."
+  }'
 ```
 
 ### Configuration
@@ -64,20 +75,20 @@ Generate price quotes for cross-chain token transfers. This endpoint processes y
 
 ```json
 {
-  "user": "1:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
+  "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
   "intent": {
     "intentType": "oif-swap",
     "inputs": [
       {
-        "user": "1:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
-        "asset": "1:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+        "asset": "0x010000010101a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
         "amount": "1000000"
       }
     ],
     "outputs": [
       {
-        "receiver": "42161:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
-        "asset": "42161:0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "receiver": "0x010000010302a461014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+        "asset": "0x010000010302a46114af88d065e77c8cc2239327c5edb3a432268e5831",
         "amount": "990000"
       }
     ],
@@ -96,19 +107,19 @@ Generate price quotes for cross-chain token transfers. This endpoint processes y
 
 **Parameters:**
 
-- `user` (string, required): User address in ERC-7930 interoperable format (chainId:address)
+- `user` (string, required): User address in ERC-7930 interoperable format (hex-encoded)
 - `intent` (object, required): Cross-chain intent specification
   - `intentType` (string, required): Type of intent operation (currently `"oif-swap"`)
   - `inputs` (array, required): Input assets from the user
-    - `user` (string): User address in ERC-7930 format
-    - `asset` (string): Asset address in ERC-7930 format (chainId:address)
+    - `user` (string): User address in ERC-7930 format (hex-encoded)
+    - `asset` (string): Asset address in ERC-7930 format (hex-encoded)
     - `amount` (string): Amount as a decimal string (required for exact-input)
     - `lock` (object, optional): Reference to existing asset lock
       - `kind` (string): Lock mechanism type (`"the-compact"`, `"rhinestone"`)
       - `params` (object, optional): Lock-specific parameters
   - `outputs` (array, required): Desired output tokens and destinations
-    - `receiver` (string): Receiver address in ERC-7930 format
-    - `asset` (string): Asset address in ERC-7930 format
+    - `receiver` (string): Receiver address in ERC-7930 format (hex-encoded)
+    - `asset` (string): Asset address in ERC-7930 format (hex-encoded)
     - `amount` (string): Amount as a decimal string (required for exact-output)
     - `calldata` (string, optional): Optional calldata for the output
   - `swapType` (string, required): Swap type determining which amounts are fixed
@@ -179,15 +190,15 @@ Generate price quotes for cross-chain token transfers. This endpoint processes y
       "preview": {
         "inputs": [
           {
-            "user": "1:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
-            "asset": "1:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+            "asset": "0x010000010101a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
             "amount": "1000000"
           }
         ],
         "outputs": [
           {
-            "receiver": "42161:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
-            "asset": "42161:0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+            "receiver": "0x010000010302a461014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+            "asset": "0x010000010302a46114af88d065e77c8cc2239327c5edb3a432268e5831",
             "amount": "990000"
           }
         ]
@@ -231,7 +242,10 @@ Generate price quotes for cross-chain token transfers. This endpoint processes y
 
 **POST** `/api/auth/register`
 
-Register a new client and receive both access and refresh tokens for API authentication. This endpoint allows self-service registration for API access with dual-token authentication.
+Register a new client and receive both access and refresh tokens for
+API authentication. This endpoint allows self-service registration for API access with dual-token authentication.
+
+**Note:** The solver currently does not implement client blacklisting or whitelisting for registration. Any client can register and obtain tokens. Access control mechanisms (blacklist/whitelist) are planned for future releases.
 
 **Request Body:**
 
@@ -332,7 +346,10 @@ Include the access token in subsequent API requests:
 curl -X POST http://localhost:3000/api/orders \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
   -H "Content-Type: application/json" \
-  -d '{"order_data": "..."}'
+  -d '{
+    "quoteId": "quote_abc123def456",
+    "signature": "0x1234567890abcdef..."
+  }'
 ```
 
 #### Refresh Token
@@ -641,6 +658,22 @@ curl -X POST http://localhost:3000/api/orders \
 
 **Note:** Order submission requires the `offchain_eip7683` discovery source to be configured in the solver settings.
 
+**Configuration:** The discovery source must be configured in your solver configuration file. This tells the solver where to forward submitted orders for execution.
+
+Example configuration in your main config file (e.g., `config.toml`):
+
+```toml
+[api.implementations]
+discovery = "offchain_eip7683"
+
+[discovery.implementations.offchain_eip7683]
+api_host = "127.0.0.1"
+api_port = 8081
+network_ids = [1, 2]  # Supported network IDs
+```
+
+Without this configuration, the `/api/orders` endpoint will return a `503 Service Unavailable` error with the message "Intent submission service not configured".
+
 #### Get Order Status
 
 **GET** `/api/orders/{id}`
@@ -677,7 +710,7 @@ Retrieve the current status and details of a submitted order. Use this endpoint 
       "type": "escrow",
       "data": {
         "raw_order_data": {
-          "user": "1:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
+          "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
           "nonce": "12345"
         },
         "signature": "0x1234567890abcdef...",

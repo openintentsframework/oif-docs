@@ -39,26 +39,26 @@ The delivery crate sits at the infrastructure layer of the solver architecture, 
 ```
 ┌─────────────────────────────────────┐
 │       Solver Services               │
-│  ┌──────────┐  ┌──────────────┐   │
-│  │solver-   │  │solver-       │   │
-│  │core      │  │service       │   │
-│  └────┬─────┘  └──────┬───────┘   │
-│       │               │            │
-│       └───────┬───────┘            │
+│  ┌──────────┐  ┌──────────────┐    │
+│  │solver-   │  │solver-       │    │
+│  │core      │  │service       │    │
+│  └────┬─────┘  └──────┬───────┘    │
+│       │               │             │
+│       └───────┬───────┘             │
 │               │                     │
 └───────────────┼─────────────────────┘
                 │
 ┌───────────────▼─────────────────────┐
 │    Infrastructure Layer             │
-│  ┌──────────────────────────────┐  │
-│  │ solver-delivery              │  │
-│  │ Transaction Delivery         │  │
-│  └──────────┬───────────────────┘  │
+│  ┌──────────────────────────────┐   │
+│  │ solver-delivery              │   │
+│  │ Transaction Delivery         │   │
+│  └──────────┬───────────────────┘   │
 └─────────────┼───────────────────────┘
               │
     ┌─────────┴─────────┐
     │                   │
-┌───▼────┐    ┌────────▼──────┐
+┌───▼────┐    ┌─────────▼─────┐
 │Ethereum│    │ Polygon       │
 │L1/L2s  │    │ Other EVMs    │
 └────────┘    └───────────────┘
@@ -76,7 +76,7 @@ The delivery crate sits at the infrastructure layer of the solver architecture, 
 
 **Async-First Architecture**: All operations are asynchronous, enabling concurrent transaction submission and non-blocking monitoring.
 
-**Pluggable Implementations**: The `DeliveryInterface` trait allows different blockchain implementations (EVM, Cosmos, Solana) to be used interchangeably through a registry pattern.
+**Pluggable Implementations**: The `DeliveryInterface` trait allows different blockchain implementations to be used interchangeably through a registry pattern.
 
 **Non-Blocking Monitoring**: Transaction tracking happens in spawned background tasks, allowing callers to continue processing immediately after submission.
 
@@ -107,38 +107,19 @@ The delivery system uses a three-layer architecture: service orchestration, bloc
 │   Blockchain abstraction                │
 └────────────────┬────────────────────────┘
                  │
-        ┌────────┴────────┐
-        │                 │
-┌───────▼──────┐   ┌─────▼──────────┐
-│AlloyDelivery │   │Future:         │
-│EVM chains    │   │CustomDelivery  │
-└──────┬───────┘   └────────────────┘
-       │
-┌──────▼─────────────────────────┐
-│ Ethereum, Polygon, Optimism,   │
-│ Arbitrum, Base, etc.           │
-└────────────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│          AlloyDelivery                  │
+│          EVM chains                     │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ Ethereum, Polygon, Optimism,            │
+│ Arbitrum, Base, etc.                    │
+└─────────────────────────────────────────┘
 ```
 
-The `DeliveryInterface` trait exists to support **multiple blockchain types** (not just multiple EVM chains). While currently only EVM is implemented via `AlloyDelivery`, the architecture allows:
-
-```rust
-// Future scenario: Multi-blockchain support
-let delivery_service = DeliveryService::new(
-    hashmap! {
-        1 => Arc::new(AlloyDelivery),        // Ethereum (EVM)
-        137 => Arc::new(AlloyDelivery),      // Polygon (EVM)
-        999 => Arc::new(CustomDelivery),     // Custom blockchain
-    },
-    confirmations: 12,
-    timeout: 300,
-);
-
-// Same API works for all blockchain types
-delivery_service.deliver(tx, tracking).await?;
-```
-
-Each implementation handles blockchain-specific details like RPC protocols, signature algorithms, gas calculation, and transaction formatting. The `DeliveryService` doesn't care about these differences—it just routes operations to the right implementation based on `chain_id`.
+The `DeliveryInterface` trait provides an abstraction layer for different blockchain implementations. Currently, only EVM is implemented via `AlloyDelivery`. The `DeliveryService` routes operations to the appropriate implementation based on `chain_id`.
 
 ### DeliveryService
 
@@ -357,10 +338,6 @@ delivery_service.deliver(tx, Some(tracking)).await?;  // Returns immediately
 4. Waits for `min_confirmations` blocks after inclusion
 5. Invokes callback with `Confirmed` or `Failed` event
 
-#### Why Polling vs WebSocket Subscriptions
-
-The implementation uses polling (`get_receipt()`) instead of WebSocket subscriptions (`watch()`) to avoid a race condition: if the transaction is mined before the subscription is fully established, the block would be missed and monitoring would hang indefinitely. Polling directly queries the receipt and cannot miss transactions.
-
 ### Error Handling
 
 All delivery operations return typed errors for structured error handling:
@@ -422,28 +399,16 @@ network_ids = [1, 137, 10, 42161]  # All these chains use AlloyDelivery
 4. `AlloyDelivery` instance stored for each `chain_id` in the map
 5. `DeliveryService` routes operations by looking up `chain_id`
 
-#### Current Reality
+#### Current Implementation
 
 ```rust
-// Currently all EVM chains share one AlloyDelivery instance
+// All EVM chains share one AlloyDelivery instance
 HashMap {
     1 => Arc<AlloyDelivery>,    // Ethereum
     137 => Arc<AlloyDelivery>,  // Polygon (same Arc, cloned)
     10 => Arc<AlloyDelivery>,   // Optimism (same Arc, cloned)
 }
 ```
-
-#### Future Possibility
-
-```rust
-// Future: Different blockchain types
-HashMap {
-    1 => Arc<AlloyDelivery>,      // Ethereum (EVM)
-    999 => Arc<CustomDelivery>,   // Custom blockchain
-}
-```
-
-The `DeliveryInterface` abstraction makes this future expansion possible without changing `DeliveryService` code.
 
 ### Registry Pattern
 
@@ -466,7 +431,6 @@ impl ImplementationRegistry for Registry {
 pub fn get_all_implementations() -> Vec<(&'static str, DeliveryFactory)> {
     vec![
         (alloy::Registry::NAME, alloy::Registry::factory()),
-        // Future: (custom::Registry::NAME, custom::Registry::factory()),
     ]
 }
 ```
@@ -858,7 +822,6 @@ impl ImplementationRegistry for Registry {
 pub fn get_all_implementations() -> Vec<(&'static str, DeliveryFactory)> {
     vec![
         (alloy::Registry::NAME, alloy::Registry::factory()),
-        (custom::Registry::NAME, custom::Registry::factory()),  // <- Add this
     ]
 }
 ```
@@ -1004,15 +967,6 @@ Monitoring tasks automatically clean up after success/failure. Don't spawn addit
 - **Batch queries**: Use `eth_call` for multiple read-only operations
 - **Parallel submissions**: Submit transactions to different chains concurrently
 - **RPC selection**: Use premium RPC providers for production (Infura, Alchemy)
-
-### Common Pitfalls
-
-1. **Not setting gas parameters**: Always provide gas limit and fee parameters
-2. **Blocking on monitoring**: Use async monitoring with callbacks
-3. **Ignoring nonce management**: Provider handles nonces, don't override unless needed
-4. **Missing error context**: Include order IDs and chain IDs in error logs
-5. **Hardcoded gas prices**: Always query current gas price or estimate
-6. **No retry logic**: Wrap calls with retry logic for transient errors
 
 ---
 

@@ -1,0 +1,668 @@
+---
+title: solver-order
+description: Intent validation, execution strategy evaluation, and transaction generation for the OIF Solver system
+---
+
+Overview
+
+The `solver-order` crate serves as the business logic layer for intent processing within the OIF Solver system. It bridges the gap between raw intent discovery and transaction execution by handling validation, applying execution strategies, and generating blockchain transactions for order fulfillment.
+
+### Core Responsibilities
+
+**Intent Validation**: Transforms raw intent data into validated orders by parsing protocol-specific formats, verifying signatures, checking timestamps, and validating cross-chain oracle routes.
+
+**Execution Strategy Evaluation**: Determines when and how orders should be executed based on market conditions, gas prices, solver balances, and profitability thresholds. Strategies can defer execution when conditions are unfavorable or skip orders entirely.
+
+**Transaction Generation**: Creates the complete set of blockchain transactions required for order lifecycle management: prepare transactions for off-chain orders, fill transactions for order execution, and claim transactions for reward settlement.
+
+The crate is designed for extensibility across different order standards through a trait-based abstraction. Currently implements EIP-7683 cross-chain intents, with a clean extension point for additional protocols. Each standard provides its own validation logic, transaction encoding, and protocol-specific requirements.
+
+### Position in the Solver Architecture
+
+The order service sits between the core orchestration engine and the delivery service. It receives validated intents from solver-core, processes them through its validation and strategy pipeline, and generates transactions that solver-delivery submits to blockchains. It also coordinates with solver-settlement to handle post-fill operations and reward claiming.
+
+```mermaid
+graph LR
+    Discovery[solver-discovery] --> Core[solver-core]
+    Core --> Order[solver-order]
+    Order --> Delivery[solver-delivery]
+    Order --> Settlement[solver-settlement]
+    Storage[solver-storage] <--> Order
+
+    style Order fill:#e1f5ff
+
+```
+
+## Core Abstractions and Traits
+
+### OrderInterface Trait
+
+The `OrderInterface` trait defines the contract that all order standard implementations must fulfill. It provides the essential operations for processing orders from validation through execution to settlement.
+
+**Configuration Schema**
+
+```rust
+fn config_schema(&self) -> Box<dyn ConfigSchema>
+
+```
+
+Each implementation defines its own configuration requirements with validation rules. The schema ensures that TOML configuration is valid before the order processor initializes.
+
+**Prepare Transaction Generation**
+
+```rust
+async fn generate_prepare_transaction(
+    &self,
+    source: &str,
+    order: &Order,
+    params: &ExecutionParams,
+) -> Result<Option<Transaction>, OrderError>
+
+```
+
+Generates transactions to prepare orders for filling when needed. For off-chain orders, this typically involves calling an `openFor()` function to register the order on-chain. On-chain orders return `None` since they're already registered. The EIP-7683 implementation handles escrow-based orders but skips preparation for compact resource lock flows.
+
+**Fill Transaction Generation**
+
+```rust
+async fn generate_fill_transaction(
+    &self,
+    order: &Order,
+    params: &ExecutionParams,
+) -> Result<Transaction, OrderError>
+
+```
+
+Creates the blockchain transaction that executes the order fill on the destination chain. This transaction transfers assets to the recipient according to the order specification. For EIP-7683, it encodes a call to the output settler's `fill()` function with the order details and solver information.
+
+**Claim Transaction Generation**
+
+```rust
+async fn generate_claim_transaction(
+    &self,
+    order: &Order,
+    fill_proof: &FillProof,
+) -> Result<Transaction, OrderError>
+
+```
+
+Generates the transaction to claim rewards on the origin chain after successful order fulfillment. Uses oracle attestation proofs to verify the fill occurred. For EIP-7683, it calls `finaliseSelf()` on the input settler with the original order data and fill proof.
+
+**Order Validation**
+
+```rust
+async fn validate_order(&self, order_bytes: &Bytes) -> Result<StandardOrder, OrderError>
+
+```
+
+Validates raw order bytes by decoding to the protocol's standard format and checking business rules. Verifies expiration times, fill deadlines, and cross-chain oracle route compatibility.
+
+**Order Creation with ID Computation**
+
+```rust
+async fn validate_and_create_order(
+    &self,
+    order_bytes: &Bytes,
+    intent_data: &Option<serde_json::Value>,
+    lock_type: &str,
+    order_id_callback: OrderIdCallback,
+    solver_address: &Address,
+    quote_id: Option<String>,
+) -> Result<Order, OrderError>
+
+```
+
+Performs complete order validation and creates a generic `Order` with a computed order ID. The order ID callback allows the system to compute unique identifiers by simulating on-chain order ID generation. This method preserves sponsor and signature information from intent data when available.
+
+### ExecutionStrategy Trait
+
+The `ExecutionStrategy` trait defines how solvers make execution decisions based on current market conditions and order characteristics.
+
+**Configuration Schema**
+
+```rust
+fn config_schema(&self) -> Box<dyn ConfigSchema>
+
+```
+
+Strategies define their own configuration parameters. The simple strategy, for example, configures a maximum gas price threshold.
+
+**Execution Decision Logic**
+
+```rust
+async fn should_execute(&self, order: &Order, context: &ExecutionContext) -> ExecutionDecision
+```
+
+Determines whether an order should be executed immediately, deferred to a later time, or skipped entirely. Returns an `ExecutionDecision` enum:
+
+- `Execute(ExecutionParams)`: Execute now with specific gas parameters
+- `Defer(Duration)`: Wait and reevaluate after the specified duration
+- `Skip(String)`: Don't execute, with a reason explaining why
+
+The execution context provides real-time data:
+
+- Chain gas prices across all networks
+- Solver token balances by chain and token
+- Current timestamp
+
+### OrderService
+
+The `OrderService` coordinates between different order standard implementations and applies the configured execution strategy.
+
+```rust
+pub struct OrderService {
+    implementations: HashMap<String, Box<dyn OrderInterface>>,
+    strategy: Box<dyn ExecutionStrategy>,
+}
+```
+
+**Standard-Based Routing**
+
+When processing an order, the service routes to the appropriate implementation based on the order's standard field. Each order specifies its protocol (e.g., "eip7683"), and the service dispatches to the corresponding registered implementation.
+
+**Strategy Application**
+
+```rust
+pub async fn should_execute(
+    &self,
+    order: &Order,
+    context: &ExecutionContext,
+) -> ExecutionDecision
+```
+
+Applies the configured strategy to determine execution timing. The strategy evaluates gas prices, balance requirements, and other conditions to make intelligent execution decisions.
+
+**Transaction Generation Methods**
+
+The service provides unified methods that delegate to the appropriate implementation:
+
+```rust
+generate_prepare_transaction(source, order, params) -> Option<Transaction>
+generate_fill_transaction(order, params) -> Transaction
+generate_claim_transaction(order, proof) -> Transaction
+```
+
+**Validation Methods**
+
+```rust
+validate_order(standard, order_bytes) -> StandardOrder
+validate_and_create_order(standard, order_bytes, ...) -> Order
+```
+
+These methods route validation requests to the correct implementation and handle order creation with proper ID computation.
+
+## Integration Architecture
+
+### Order Lifecycle in the Solver System
+
+The order service participates in a multi-stage lifecycle managed by solver-core:
+
+**Stage 1: Intent Discovery to Order Validation**
+
+When an intent arrives, solver-core calls `validate_and_create_order()` on the order service. The service validates the raw intent data (checking format, oracle routes, timestamps), computes a unique order ID, and returns a generic `Order` structure that the core stores with `OrderPending` status.
+
+**Stage 2: Execution Strategy Evaluation**
+
+The core engine regularly evaluates pending orders by calling `should_execute()`. The order service delegates to its configured strategy, which examines market conditions (gas prices, solver balances) and returns one of three decisions:
+
+- `Execute`: Proceed with execution immediately
+- `Defer`: Retry after a specified duration
+- `Skip`: Abandon the order with a reason
+
+Based on this decision, the core either proceeds with execution, schedules a retry, or marks the order as skipped.
+
+**Stage 3: Transaction Generation**
+
+When execution is approved, the core requests transaction generation. For off-chain orders, it first generates and submits a prepare transaction (calling `openFor()` on the input settler). Then it generates the fill transaction that executes the order on the destination chain.
+
+**Stage 4: Settlement and Claim**
+
+After the fill is confirmed and any dispute period passes, solver-settlement notifies the core that claiming is ready. The core requests a claim transaction from the order service, which generates a transaction calling `finaliseSelf()` to finalize the order and claim rewards on the origin chain.
+
+### Data Flow and Transformations
+
+**Intent to Order Transformation**
+
+```
+Raw Intent Data (JSON/Bytes)
+  |
+  v
+[OrderInterface::validate_and_create_order]
+  |
+  +-> Parse order bytes to StandardOrder
+  +-> Validate business rules (expiration, deadlines)
+  +-> Check oracle route compatibility
+  +-> Compute order ID via callback
+  +-> Extract chain and settler information
+  |
+  v
+Generic Order Structure
+  |
+  +-> id: Unique order identifier
+  +-> standard: Protocol name (e.g., "eip7683")
+  +-> status: OrderStatus enum
+  +-> data: Protocol-specific JSON data
+  +-> input_chains: Origin chain settler info
+  +-> output_chains: Destination chain settler info
+  +-> solver_address: Address for rewards
+
+```
+
+The transformation creates a protocol-agnostic `Order` structure that the core engine and other services can work with uniformly, while preserving protocol-specific details in the `data` field.
+
+**Order to Transaction Transformation**
+
+```
+Order + ExecutionParams
+  |
+  v
+[OrderInterface::generate_fill_transaction]
+  |
+  +-> Extract order data (inputs, outputs)
+  +-> Identify destination chain
+  +-> Build protocol-specific calldata
+  +-> Encode solver information
+  |
+  v
+Transaction
+  |
+  +-> to: Destination settler contract
+  +-> data: ABI-encoded function call
+  +-> value: ETH value (typically 0)
+  +-> chain_id: Target blockchain
+  +-> gas_limit: Optional override
+
+```
+
+Transaction generation encodes all order details into blockchain-specific transactions ready for submission.
+
+### Configuration and Initialization
+
+**Factory Registry Pattern**
+
+The crate uses a factory registry pattern for extensibility:
+
+```rust
+pub type OrderFactory = fn(
+    &toml::Value,
+    &NetworksConfig,
+    &OracleRoutes,
+) -> Result<Box<dyn OrderInterface>, OrderError>;
+
+pub type StrategyFactory = fn(
+    &toml::Value
+) -> Result<Box<dyn ExecutionStrategy>, StrategyError>;
+
+```
+
+Each implementation provides a factory function that constructs an instance from configuration:
+
+```rust
+pub fn get_all_order_implementations() -> Vec<(&'static str, OrderFactory)> {
+    vec![
+        ("eip7683", crate::implementations::standards::_7683::create_order_impl)
+    ]
+}
+
+pub fn get_all_strategy_implementations() -> Vec<(&'static str, StrategyFactory)> {
+    vec![
+        ("simple", crate::implementations::strategies::simple::create_strategy)
+    ]
+}
+
+```
+
+**Configuration Structure**
+
+```toml
+[order]
+# Order standard implementations
+[order.implementations.eip7683]
+# No specific config needed - uses networks config
+
+# Execution strategy
+[order.strategy]
+primary = "simple"
+
+[order.strategy.implementations.simple]
+max_gas_price_gwei = 100
+
+```
+
+The solver-config crate loads this configuration and uses the factory functions to instantiate the order service with the appropriate implementation and strategy.
+
+## Internal Flow Diagrams
+
+### Order Validation Flow
+
+The validation process ensures orders are properly formed and executable before commitment through these key steps:
+
+1. **ABI Decoding**: Verifies the raw bytes conform to the protocol's ABI structure (e.g., StandardOrder for EIP-7683)
+2. **Timestamp Validation**: Checks that current time is before both the order expiration and fill deadline
+3. **Oracle Route Validation**: Looks up the input oracle in supported routes, builds a set of supported destination chains for efficient lookup
+4. **Cross-Chain Compatibility**: For each output, validates that:
+   - Same-chain outputs are allowed (skipped from cross-chain validation)
+   - Cross-chain outputs have a supported route from the input oracle
+   - If an output oracle is specified, it's compatible with the input oracle
+
+Validation errors return descriptive messages with context (e.g., "Output oracle 0x... on chain 137 is not compatible with input oracle 0x... on chain 1")
+
+### EIP-7683 Lock Type Flows
+
+EIP-7683 supports multiple lock mechanisms for securing assets during order execution. The implementation handles two primary patterns: escrow-based locks and compact resource locks.
+
+**Escrow Flow (Permit2 and EIP-3009)**
+
+1. **Prepare Phase** (off-chain orders only): User signs order with Permit2/EIP-3009 and submits to solver. Solver calls `openFor()` on input settler, which locks user tokens in escrow.
+2. **Fill Phase**: Solver calls `fill()` on output settler with order ID, output details, and filler data. Output settler transfers tokens to recipient.
+3. **Claim Phase**: After oracle attestation, solver calls `finaliseSelf()` on input settler with order data and solve params. Input settler verifies attestation and releases escrowed tokens plus rewards.
+
+**Compact Resource Lock Flow**
+
+1. **No Prepare Phase**: User creates resource lock directly on-chain via input settler compact contract.
+2. **Fill Phase**: Same as escrow - solver calls `fill()` on output settler.
+3. **Claim Phase**: Solver calls `finalise()` with additional compact signatures parameter. Input settler verifies both compact signatures and attestation before releasing resources and rewards.
+
+**Lock Type Determination**
+
+```rust
+pub enum LockType {
+    Permit2Escrow = 1,    // Uses Permit2 for token authorization
+    Eip3009Escrow = 2,    // Uses EIP-3009 transferWithAuthorization
+    ResourceLock = 3,     // Compact protocol resource locks
+}
+
+```
+
+The implementation routes to different settler contracts and uses different transaction encoding based on the lock type:
+
+```rust
+pub fn get_settler_address(&self, chain_id: u64, lock_type: LockType) -> Result<Address> {
+    match lock_type {
+        LockType::ResourceLock => {
+            network.input_settler_compact_address // Compact settler
+        },
+        LockType::Permit2Escrow | LockType::Eip3009Escrow => {
+            network.input_settler_address // Standard escrow settler
+        },
+    }
+}
+
+```
+
+### Transaction Generation Pipeline
+
+The transaction generation process transforms validated orders into executable blockchain transactions.
+
+**Prepare Transaction Generation**
+
+Only needed for off-chain escrow orders (returns `None` for on-chain or compact resource lock orders):
+
+1. Extract raw order data, sponsor address, and signature from order
+2. Decode StandardOrder structure
+3. Encode `openFor(order, sponsor, signature)` call for input settler
+4. Build transaction with input settler address, encoded calldata, origin chain ID, and gas limit overrides
+
+**Fill Transaction Generation**
+
+Executes the order on the destination chain:
+
+1. Parse order data and find first cross-chain output (error if none found)
+2. Get output settler address for destination chain
+3. Build `SolMandateOutput` struct with oracle, settler (as bytes32), chain ID, token, amount, and recipient
+4. Build filler data containing solver address as bytes32
+5. Encode `fill(orderId, output, fillDeadline, fillerData)` call
+6. Build transaction with output settler address, encoded calldata, destination chain ID, and gas limit overrides
+
+**Claim Transaction Generation**
+
+Finalizes the order on origin chain:
+
+1. Parse order data and validate it has cross-chain outputs
+2. Build inputs and outputs arrays with settler addresses
+3. Construct StandardOrder struct
+4. Build SolveParams with filled timestamp and solver address
+5. Set destination to solver address for self-claim
+6. Encode call based on lock type:
+   - **Escrow**: `finaliseSelf(order, solveParams, destination, call)`
+   - **Compact**: `finalise(order, signatures, solveParams, destination, call)` with compact signatures
+7. Build transaction with input settler address, encoded calldata, origin chain ID, and gas limit overrides
+
+### Execution Strategy Evaluation
+
+The simple strategy provides gas-based and balance-based execution logic with three types of decisions:
+
+1. **Defer**: Gas prices exceed threshold - wait 60 seconds and retry later
+2. **Skip**: Insufficient balance or missing information - abandon order with descriptive reason
+3. **Execute**: All conditions met - proceed with execution using current gas parameters
+
+**Evaluation Process**
+
+1. Get maximum gas price across all chains from execution context
+2. If gas price exceeds configured threshold, return `Defer(60s)`
+3. Parse order data to extract requested outputs
+4. For each output:
+   - Extract chain ID and token address from asset
+   - Build balance lookup key `(chain_id, token_address)`
+   - Look up solver's balance from execution context
+   - If balance info missing, return `Skip("No balance information")`
+   - If balance insufficient, return `Skip("Insufficient balance: have X need Y")`
+5. If all checks pass, return `Execute` with gas price from context and 2 gwei priority fee
+
+The execution context provides pre-fetched balances to avoid repeated RPC calls during evaluation.
+
+## Extension Points
+
+### Adding a New Order Standard
+
+To support a new order protocol (e.g., EIP-XXXX):
+
+**1. Implement the OrderInterface Trait**
+
+```rust
+pub struct EipXxxxOrderImpl {
+    networks: NetworksConfig,
+    // ... protocol-specific fields
+}
+
+#[async_trait]
+impl OrderInterface for EipXxxxOrderImpl {
+    fn config_schema(&self) -> Box<dyn ConfigSchema> {
+        Box::new(EipXxxxOrderSchema)
+    }
+
+    async fn generate_prepare_transaction(...) -> Result<Option<Transaction>, OrderError> {
+        // Protocol-specific prepare logic
+    }
+
+    async fn generate_fill_transaction(...) -> Result<Transaction, OrderError> {
+        // Protocol-specific fill logic
+    }
+
+    async fn generate_claim_transaction(...) -> Result<Transaction, OrderError> {
+        // Protocol-specific claim logic
+    }
+
+    async fn validate_order(...) -> Result<StandardOrder, OrderError> {
+        // Protocol-specific validation
+    }
+
+    async fn validate_and_create_order(...) -> Result<Order, OrderError> {
+        // Protocol-specific order creation
+    }
+}
+
+```
+
+**2. Create a Factory Function**
+
+```rust
+pub fn create_order_impl(
+    config: &toml::Value,
+    networks: &NetworksConfig,
+    oracle_routes: &OracleRoutes,
+) -> Result<Box<dyn OrderInterface>, OrderError> {
+    // Validate config
+    EipXxxxOrderSchema::validate_config(config)?;
+
+    // Construct implementation
+    let impl = EipXxxxOrderImpl::new(networks.clone(), oracle_routes.clone())?;
+    Ok(Box::new(impl))
+}
+```
+
+**3. Implement the Registry**
+
+```rust
+pub struct Registry;
+
+impl solver_types::ImplementationRegistry for Registry {
+    const NAME: &'static str = "eipxxxx";
+    type Factory = crate::OrderFactory;
+
+    fn factory() -> Self::Factory {
+        create_order_impl
+    }
+}
+
+impl crate::OrderRegistry for Registry {}
+```
+
+**4. Register in the Main Library**
+
+```rust
+// In lib.rs
+pub fn get_all_order_implementations() -> Vec<(&'static str, OrderFactory)> {
+    vec![
+        ("eip7683", implementations::standards::_7683::Registry::factory()),
+        ("eipxxxx", implementations::standards::eipxxxx::Registry::factory()),
+    ]
+}
+```
+
+**5. Add Configuration**
+
+```toml
+[order.implementations.eipxxxx]
+# Protocol-specific configuration parameters
+custom_param = "value"
+```
+
+## Error Handling
+
+### OrderError Types
+
+The crate defines specific error types for different failure scenarios:
+
+```rust
+pub enum OrderError {
+    ValidationFailed(String),      // Invalid format or business rules
+    InsufficientBalance,            // Solver lacks required tokens
+    CannotSatisfyOrder,             // Order cannot be fulfilled
+    InvalidOrder(String),           // Configuration or data issues
+}
+```
+
+**Usage Patterns**
+
+```rust
+// Validation errors with context
+if order.expires < current_timestamp() {
+    return Err(OrderError::ValidationFailed("Order has expired".to_string()));
+}
+
+// Balance checks
+if solver_balance < required_amount {
+    return Err(OrderError::InsufficientBalance);
+}
+
+// Configuration errors
+if !networks.contains_key(&chain_id) {
+    return Err(OrderError::InvalidOrder(
+        format!("Chain {} not configured", chain_id)
+    ));
+}
+```
+
+### StrategyError Types
+
+Strategy-specific errors handle configuration and initialization issues:
+
+```rust
+pub enum StrategyError {
+    InvalidConfig(String),           // Configuration validation failed
+    MissingParameter(String),        // Required parameter not provided
+    InitializationFailed(String),    // Strategy setup failed
+    ImplementationNotAvailable(String), // Implementation not found
+}
+```
+
+**Error Propagation**
+
+```rust
+pub fn create_strategy(config: &toml::Value) -> Result<Box<dyn ExecutionStrategy>, StrategyError> {
+    let schema = SimpleStrategySchema;
+    schema
+        .validate(config)
+        .map_err(|e| StrategyError::InvalidConfig(e.to_string()))?;
+
+    let max_gas_price = config
+        .get("max_gas_price_gwei")
+        .and_then(|v| v.as_integer())
+        .ok_or_else(|| StrategyError::MissingParameter("max_gas_price_gwei".to_string()))?;
+
+    Ok(Box::new(SimpleStrategy::new(max_gas_price as u64)))
+}
+```
+
+## Relationship with Other Crates
+
+### solver-types
+
+Provides all shared data structures, traits, and interfaces:
+
+- `Order`, `ExecutionDecision`, `ExecutionParams`
+- `Transaction`, `FillProof`
+- `StandardOrder` and protocol-specific types
+- `ConfigSchema` and validation traits
+
+### solver-core
+
+Orchestrates order lifecycle and calls into solver-order:
+
+- Calls `validate_and_create_order()` when intents arrive
+- Calls `should_execute()` to evaluate execution timing
+- Calls transaction generation methods when execution is approved
+- Manages order state transitions based on transaction results
+
+### solver-storage
+
+Stores order data and provides ID computation:
+
+- Persists `Order` structures created by solver-order
+- Provides `order_id_callback` for deterministic ID computation
+- Tracks order status throughout lifecycle
+
+### solver-delivery
+
+Submits transactions generated by solver-order:
+
+- Receives `Transaction` structures from generate\_\*\_transaction methods
+- Handles signing, submission, and confirmation
+- Reports transaction status back to solver-core
+
+### solver-settlement
+
+Handles post-fill operations:
+
+- Monitors fill confirmations
+- Generates fill proofs used in claim transactions
+- Determines when orders are ready for claiming
+
+### solver-config
+
+Initializes solver-order from configuration:
+
+- Loads order implementation and strategy configuration
+- Validates configuration against schemas
+- Uses factory functions to instantiate implementations

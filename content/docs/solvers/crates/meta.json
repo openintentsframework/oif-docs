@@ -1,7 +1,8 @@
 {
   "title": "Crates",
   "pages": [
-    "solver-account"
+    "solver-account",
+    "solver-demo"
   ]
 }
 

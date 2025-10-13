@@ -56,21 +56,7 @@ cargo test --workspace
 
 4. **Set up demo environment**:
 
-The demo environment provides local blockchain networks for testing. The `solver-demo` CLI tool (in `crates/solver-demo/`) manages the local test environment:
-
-```bash
-# Initialize configuration for local development
-cargo run --bin solver-demo -- init load config/demo.toml --local
-
-# Start local Anvil instances
-cargo run --bin solver-demo -- env start
-
-# Deploy contracts to both chains
-cargo run --bin solver-demo -- env deploy --all
-
-# Setup test environment (mint tokens, configure permissions)
-cargo run --bin solver-demo -- env setup
-```
+For detailed instructions on setting up the local development environment with Anvil chains, deploying contracts, and configuring test tokens, see the [Quick Setup - Local Environment](./quickstart#quick-setup---local-environment) section in the Quickstart Guide.
 
 5. **Configure the solver**:
 

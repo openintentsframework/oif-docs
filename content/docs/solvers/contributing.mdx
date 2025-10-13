@@ -1,0 +1,441 @@
+# Contributing Guide
+
+This section will help you get started with development, understand our standards, and submit contributions effectively.
+
+## Getting Started
+
+### Prerequisites
+
+Ensure you have the following tools installed:
+
+- **Rust** (stable toolchain) - [Install Rust](https://rustup.rs/)
+- **Git** for version control
+- **Foundry** (for testing) - [Install Foundry](https://book.getfoundry.sh/)
+
+### Fork and Clone
+
+1. Fork the repository on GitHub
+2. Clone your fork locally:
+
+```bash
+git clone https://github.com/YOUR_USERNAME/oif-solver.git
+cd oif-solver
+```
+
+3. Add the upstream remote:
+
+```bash
+git remote add upstream https://github.com/openintentsframework/oif-solver.git
+```
+
+### Development Setup
+
+1. **Verify prerequisites**:
+
+```bash
+# Check Rust installation
+rustc --version
+cargo --version
+
+# Check Foundry installation (for testing)
+forge --version
+anvil --version
+```
+
+2. **Build the project**:
+
+```bash
+cargo build
+```
+
+3. **Run tests**:
+
+```bash
+cargo test --workspace
+```
+
+4. **Set up demo environment**:
+
+For detailed instructions on setting up the local development environment with Anvil chains, deploying contracts, and configuring test tokens, see the [Quick Setup - Local Environment](./quickstart#quick-setup---local-environment) section in the Quickstart Guide.
+
+5. **Configure the solver**:
+
+Configuration files are in the `config/` directory:
+
+- `demo.toml`: Main demo configuration with modular includes
+- `config/demo/`: Modular configuration files (networks, api, gas settings)
+- `example.toml`: Single-file configuration example
+
+6. **Verify everything works**:
+
+```bash
+# In one terminal, run the solver with demo configuration
+cargo run --bin solver -- --config config/demo.toml
+
+# In another terminal, build and submit a test intent
+cargo run --bin solver-demo -- intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TokenA \
+  --to-token TokenB \
+  --amount 10 \
+  --settlement escrow \
+  --auth permit2
+
+# Check token balances after execution
+cargo run --bin solver-demo -- token balance all
+```
+
+#### Troubleshooting
+
+**Build fails with dependency errors:**
+
+```bash
+cargo clean
+cargo update
+cargo build
+```
+
+**Demo environment issues:**
+
+```bash
+# Stop and restart the environment
+cargo run --bin solver-demo -- env stop
+cargo run --bin solver-demo -- env start
+
+# Or reinitialize completely
+cargo run --bin solver-demo -- init load config/demo.toml --local
+cargo run --bin solver-demo -- env start
+cargo run --bin solver-demo -- env deploy --all
+cargo run --bin solver-demo -- env setup
+```
+
+**Port conflicts:**
+Check that ports 8545, 8546 (anvil) and 3000 (API) are available.
+
+## Project Structure
+
+The OIF Solver is organized as a Rust workspace with multiple crates, each serving a specific purpose:
+
+### Crate Layers
+
+```
+solver-service (binary)
+    ↓
+solver-core (orchestration)
+    ↓
+solver-discovery, solver-order, solver-delivery, solver-settlement (services)
+    ↓
+solver-storage, solver-account, solver-config, solver-pricing (infrastructure)
+    ↓
+solver-types (shared types)
+```
+
+### Key Crates
+
+**Foundation Layer:**
+
+- **solver-types**: Shared data structures, traits, and utilities
+
+**Infrastructure Layer:**
+
+- **solver-config**: Configuration parsing and validation
+- **solver-storage**: Persistent storage with TTL management
+- **solver-account**: Key management and transaction signing
+- **solver-pricing**: Fee calculation and pricing strategies
+
+**Service Layer:**
+
+- **solver-discovery**: Multi-source intent discovery and monitoring
+- **solver-order**: Intent validation, execution strategies, transaction generation
+- **solver-delivery**: Multi-chain transaction submission and monitoring
+- **solver-settlement**: Settlement verification and claim processing
+
+**Orchestration Layer:**
+
+- **solver-core**: Event-driven orchestration and state management
+
+**Application Layer:**
+
+- **solver-service**: Main executable with REST API
+
+For detailed information about each crate, see [Project Structure](project-structure.md).
+
+## Development Workflow
+
+### Branch Strategy
+
+- **main**: Stable release branch
+- **develop**: Integration branch for new features
+- **feature/**: Feature branches (e.g., `feature/new-protocol`)
+- **fix/**: Bug fix branches (e.g., `fix/gas-estimation`)
+- **docs/**: Documentation-only changes
+
+### Creating a Feature Branch
+
+```bash
+# Update your local main branch
+git checkout main
+git pull upstream main
+
+# Create a feature branch
+git checkout -b feature/your-feature-name
+```
+
+### Staying Up-to-Date
+
+Regularly sync your fork with upstream:
+
+```bash
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push origin main
+```
+
+## Code Standards
+
+### Rust Style Guidelines
+
+We follow standard Rust conventions with some project-specific additions:
+
+#### Formatting
+
+Use `rustfmt` for consistent code formatting:
+
+```bash
+# Check formatting
+cargo fmt --check
+
+# Apply formatting
+cargo fmt
+```
+
+Configuration is in `rustfmt.toml`:
+
+```toml
+max_width = 100
+hard_tabs = true
+tab_spaces = 4
+edition = "2024"
+```
+
+**Key formatting rules:**
+
+- **Line width**: Maximum 100 characters
+- **Indentation**: Hard tabs (4 spaces width)
+- **Imports**: Automatically reordered and grouped
+- **Functions**: Use tall parameter layout for readability
+
+#### Linting
+
+Use `clippy` for code quality:
+
+```bash
+# Check for issues
+cargo clippy -- -D warnings
+
+# Fix issues automatically where possible
+cargo clippy --fix
+```
+
+#### Naming Conventions
+
+- **Types/Traits**: `PascalCase` (e.g., `OrderService`, `StorageProvider`)
+- **Functions/Variables**: `snake_case` (e.g., `validate_intent`, `order_id`)
+- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `MAX_RETRIES`, `DEFAULT_TIMEOUT`)
+- **Modules**: `snake_case` (e.g., `solver_core`, `implementations`)
+
+#### Documentation
+
+- Add doc comments (`///`) for all public APIs
+- Include examples in doc comments when helpful
+- Document error conditions and panics
+- Use `//!` for module-level documentation
+
+```rust
+/// Validates an intent according to the protocol rules.
+///
+/// # Arguments
+///
+/// * `intent` - The intent to validate
+///
+/// # Returns
+///
+/// Returns `Ok(())` if valid, or an error describing the validation failure.
+///
+/// # Errors
+///
+/// Returns an error if the intent deadline has passed or amounts are invalid.
+pub fn validate_intent(intent: &Intent) -> Result<(), ValidationError> {
+    // implementation
+}
+```
+
+#### Project-Specific Patterns
+
+**Error Handling:**
+
+- Use `Result<T, E>` for recoverable errors
+- Use descriptive error types per module
+- Propagate errors with `?` operator
+- Add context to errors when crossing module boundaries
+
+**Async Code:**
+
+- Use `async/await` for I/O operations
+- Avoid blocking operations in async contexts
+- Use `tokio` runtime conventions
+
+**Architecture:**
+
+- Follow the layered architecture (see [Architecture Guide](architecture.md))
+- Use dependency injection via traits
+- Event-driven communication between services
+- Keep components loosely coupled
+
+## Testing Requirements
+
+### Unit Testing
+
+Unit tests verify individual functions and components in isolation.
+
+#### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run tests for a specific crate
+cargo test -p solver-core
+
+# Run with output
+cargo test -- --nocapture
+```
+
+#### Test Builders
+
+Use the test builders in `solver-types/src/utils/tests/builders/` to create test data:
+
+```rust
+use solver_types::utils::tests::builders::{IntentBuilder, NetworkBuilder};
+
+#[test]
+fn test_example() {
+    let intent = IntentBuilder::default().build();
+    // Your test logic here
+}
+```
+
+#### Guidelines
+
+- Test both success and failure paths
+- Use descriptive test names
+- Keep tests isolated and independent
+- Mock external dependencies (use `MemoryStorage`, `MockPricing`)
+
+## Pull Request Process
+
+### Before Submitting
+
+1. **Run the full test suite**:
+
+```bash
+cargo test
+```
+
+2. **Check code formatting**:
+
+```bash
+cargo fmt --check
+```
+
+3. **Run linting**:
+
+```bash
+cargo clippy -- -D warnings
+```
+
+4. **Update documentation** if needed
+
+5. **Test with demo environment**:
+
+```bash
+# Restart environment
+cargo run --bin solver-demo -- env stop
+cargo run --bin solver-demo -- env start
+
+# Run solver and test
+cargo run --bin solver -- --config config/demo.toml
+cargo run --bin solver-demo -- intent build --from-chain 31337 --to-chain 31338 --from-token TokenA --to-token TokenB --amount 10 --settlement escrow --auth permit2
+```
+
+### Pull Request Template
+
+Use this template for your PR description:
+
+```markdown
+## Description
+
+Brief description of changes and motivation.
+
+## Type of Change
+
+- [ ] Bug fix (non-breaking change that fixes an issue)
+- [ ] New feature (non-breaking change that adds functionality)
+- [ ] Breaking change (fix or feature that breaks existing functionality)
+- [ ] Documentation update
+- [ ] Refactoring (no functional changes)
+
+## Testing
+
+- [ ] Unit tests added/updated
+- [ ] Integration tests added/updated
+- [ ] Manual testing performed
+- [ ] Demo environment tested
+
+## Checklist
+
+- [ ] Code follows project style guidelines
+- [ ] Self-review completed
+- [ ] Documentation updated
+- [ ] Tests pass locally
+- [ ] No new warnings introduced
+
+## Community Guidelines
+
+### Code of Conduct
+
+We follow the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct). Please:
+
+- Be respectful and inclusive
+- Welcome newcomers and help them learn
+- Focus on constructive feedback
+- Assume good intentions
+- Respect different perspectives
+
+### Communication Channels
+
+- **GitHub Issues**: Bug reports and feature requests
+- **GitHub Discussions**: General questions and community discussions
+- **Pull Requests**: Code review and technical discussions
+
+### Getting Help
+
+If you need help:
+
+1. **Check documentation** first
+2. **Search existing issues** for similar problems
+3. **Ask in GitHub Discussions** for general questions
+4. **Open an issue** for bugs or feature requests
+
+## Recognition
+
+Contributors are recognized in:
+
+- **CONTRIBUTORS.md**: List of all contributors
+- **Release Notes**: Major contributions highlighted
+- **Documentation**: Author attribution where appropriate
+
+Thank you for contributing to the OIF Solver! Your contributions help make cross-chain intent execution more reliable and accessible for everyone.
+```

@@ -90,7 +90,7 @@ The solver core operates on `Order` structs that contain a `data: serde_json::Va
 - **Oracle**: Which oracle validates the cross-chain transfer
 - **Chains**: Which chains are involved
 
-#### Integration in the Solver
+#### OrderParsable in Solver Core Processing
 
 In `solver-core`, when processing an order:
 
@@ -109,7 +109,7 @@ let gas_cost = estimate_gas(origin, destinations);
 let profitability = calculate_profit(inputs, outputs, gas_cost);
 ```
 
-#### How to Extend
+#### Extending OrderParsable for New Standards
 
 To add a new cross-chain standard (e.g., EIP-XXXX):
 
@@ -211,6 +211,12 @@ The `solver-delivery` service publishes these. The `solver-core` engine subscrib
 
 ```rust
 pub enum SettlementEvent {
+    FillDetected {
+		order_id: String,
+		tx_hash: TransactionHash,
+	},
+    /// Fill proof has been generated and is ready.
+	ProofReady { order_id: String, proof: FillProof },
     PostFillReady { order_id },      // Trigger post-fill transaction
     StartMonitoring { order_id, fill_tx_hash },  // Begin monitoring
     ClaimReady { order_id },         // Ready to claim rewards
@@ -249,7 +255,7 @@ pub struct InteropAddress {
 
 In cross-chain operations, you need to specify both "which chain" and "which address". Traditional addresses only encode the address part. ERC-7930 combines both into a single compact format.
 
-#### Real-World Usage in the Solver
+#### InteropAddress in API Requests and Responses
 
 In API requests and responses:
 
@@ -306,7 +312,7 @@ pub enum StorageKey {
 }
 ```
 
-#### The Problem It Solves
+#### Type Safety Benefits
 
 Without this enum:
 
@@ -323,7 +329,7 @@ storage.get(StorageKey::Oder, id)?;  // Compile error!
 storage.get(StorageKey::Orders, id)?;  // Correct
 ```
 
-#### Integration with solver-storage
+#### StorageKey in solver-storage
 
 The `solver-storage` crate uses these keys to namespace different data types:
 
@@ -338,7 +344,7 @@ impl StorageInterface for MyStorage {
 }
 ```
 
-#### Where Each Key Is Used
+#### StorageKey Usage Across Services
 
 | Key | Used By | Purpose | TTL |
 |-----|---------|---------|-----|
@@ -359,7 +365,7 @@ pub trait ConfigSchema: Send + Sync {
 }
 ```
 
-#### How It Enables Plugins
+#### ConfigSchema in Service Interfaces
 
 Every service interface in the solver system requires implementations to provide a `config_schema()`:
 
@@ -403,7 +409,7 @@ impl ConfigSchema for Eip7683OffchainDiscoverySchema {
 }
 ```
 
-#### How solver-config Uses This
+#### Configuration Validation Flow
 
 When loading configuration, `solver-config` validates each service's config against its schema:
 
@@ -516,7 +522,7 @@ let pending_tx = provider.send_transaction(tx_request).await?;
 let receipt = pending_tx.get_receipt().await?;
 ```
 
-#### The Retry Strategy
+#### Provider Retry Configuration
 
 The factories configure sophisticated retry logic:
 
@@ -554,7 +560,7 @@ pub enum LockType {
 }
 ```
 
-#### Impact on the Entire Execution Flow
+#### LockType Effects on Execution Flow
 
 The lock type affects:
 
@@ -621,7 +627,7 @@ pub trait ImplementationRegistry {
 }
 ```
 
-#### How Services Self-Register
+#### Service Registration Pattern
 
 Each service implementation declares its name and provides a factory function:
 
@@ -649,7 +655,7 @@ impl ImplementationRegistry for Registry {
 }
 ```
 
-#### How solver-core Uses This
+#### Registry Usage in Solver Core
 
 When building the solver engine, it calls the factories:
 
@@ -737,7 +743,7 @@ pub mod interfaces {
 }
 ```
 
-#### How solver-order Uses These
+#### Solidity Bindings in Transaction Generation
 
 ```rust
 use solver_types::standards::eip7683::interfaces::*;
@@ -762,7 +768,7 @@ Transaction {
 }
 ```
 
-#### Why Feature-Gated
+#### Feature Flag Rationale
 
 Not all crates need contract interaction. For example, `solver-storage` just stores data. By making these bindings optional, compilation is faster and binaries are smaller for crates that don't need them.
 
@@ -861,7 +867,7 @@ ValidationError::InvalidValue {
 
 ## Integration Architecture
 
-### How Types Flow Through the System
+### Type Flow Through Processing Pipeline
 
 #### 1. Intent Discovery → Order Creation
 

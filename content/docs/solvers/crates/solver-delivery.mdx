@@ -1,0 +1,979 @@
+---
+title: solver-delivery
+description: Transaction delivery and monitoring for blockchain networks in the OIF Solver
+---
+
+# solver-delivery
+
+## Purpose & Overview
+
+The `solver-delivery` crate manages blockchain transaction submission and monitoring across multiple EVM-compatible networks. It provides a unified interface for signing, submitting, and tracking transactions throughout the complete order execution lifecycle in the OIF solver system.
+
+### Core Responsibilities
+
+**Transaction Submission**
+
+- Sign transactions with chain-specific private keys
+- Submit transactions to blockchain RPC endpoints
+- Handle network failures with automatic retry logic
+- Return transaction hashes immediately for asynchronous processing
+
+**Transaction Monitoring**
+
+- Track transaction confirmations in background tasks
+- Emit events when transactions confirm or fail
+- Support configurable confirmation thresholds and timeouts
+- Clean up monitoring resources automatically
+
+**Blockchain State Queries**
+
+- Query native and ERC-20 token balances
+- Check token allowances for approval workflows
+- Estimate gas costs before transaction submission
+- Execute read-only contract calls via `eth_call`
+
+### Integration Context
+
+The delivery crate sits at the infrastructure layer of the solver architecture, serving as the blockchain interaction gateway for higher-level services:
+
+```
+┌─────────────────────────────────────┐
+│       Solver Services               │
+│  ┌──────────┐  ┌──────────────┐     │
+│  │solver-   │  │solver-       │     │
+│  │core      │  │service       │     │
+│  └────┬─────┘  └──────┬───────┘     │
+│       │               │             │
+│       └───────┬───────┘             │
+│               │                     │
+└───────────────┼─────────────────────┘
+                │
+┌───────────────▼─────────────────────┐
+│    Infrastructure Layer             │
+│  ┌──────────────────────────────┐   │
+│  │ solver-delivery              │   │
+│  │ Transaction Delivery         │   │
+│  └──────────┬───────────────────┘   │
+└─────────────┼───────────────────────┘
+              │
+    ┌─────────┴─────────┐
+    │                   │
+┌───▼────┐    ┌─────────▼─────┐
+│Ethereum│    │ Polygon       │
+│L1/L2s  │    │ Other EVMs    │
+└────────┘    └───────────────┘
+```
+
+**Used by:**
+
+- **solver-core**: Submitting intent and settlement transactions
+- **solver-service**: Gas estimation and balance checks for quotes
+- **solver-demo**: Executing demonstration workflows
+
+### Key Design Principles
+
+**Multi-Chain Support**: A single `DeliveryService` instance manages transactions across multiple blockchain networks, routing operations based on chain ID.
+
+**Async-First Architecture**: All operations are asynchronous, enabling concurrent transaction submission and non-blocking monitoring.
+
+**Pluggable Implementations**: The `DeliveryInterface` trait allows different blockchain implementations to be used interchangeably through a registry pattern.
+
+**Non-Blocking Monitoring**: Transaction tracking happens in spawned background tasks, allowing callers to continue processing immediately after submission.
+
+---
+
+## Delivery Mechanisms
+
+The delivery system uses a three-layer architecture: service orchestration, blockchain abstraction, and concrete implementations.
+
+### Layer Architecture
+
+```
+┌─────────────────────────────────────────┐
+│      Application Layer                  │
+│   solver-core / solver-service          │
+│   Business Logic                        │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│      Service Layer                      │
+│   DeliveryService                       │
+│   Routes by chain_id                    │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│      Interface Layer                    │
+│   DeliveryInterface trait               │
+│   Blockchain abstraction                │
+└────────────────┬────────────────────────┘
+                 │
+                 │
+┌────────────────▼────────────────────────┐
+│          AlloyDelivery                  │
+│          EVM chains                     │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ Ethereum, Polygon, Optimism,            │
+│ Arbitrum, Base, etc.                    │
+└─────────────────────────────────────────┘
+```
+
+The `DeliveryInterface` trait provides an abstraction layer for different blockchain implementations. Currently, only EVM is implemented via `AlloyDelivery`. The `DeliveryService` routes operations to the appropriate implementation based on `chain_id`.
+
+### DeliveryService
+
+The orchestration layer that routes blockchain operations to appropriate implementations.
+
+```rust
+pub struct DeliveryService {
+    implementations: HashMap<u64, Arc<dyn DeliveryInterface>>,
+    min_confirmations: u64,
+    monitoring_timeout_seconds: u64,
+}
+```
+
+#### How Routing Works
+
+```rust
+pub async fn deliver(
+    &self,
+    tx: Transaction,
+    tracking: Option<TransactionTracking>,
+) -> Result<TransactionHash, DeliveryError> {
+    // Extract chain ID from transaction
+    let implementation = self.implementations
+        .get(&tx.chain_id)
+        .ok_or(DeliveryError::NoImplementationAvailable)?;
+
+    // Route to appropriate implementation
+    implementation.submit(tx, enhanced_tracking).await
+}
+```
+
+All service methods follow this pattern: extract `chain_id`, lookup implementation, delegate operation. This keeps the service implementation-agnostic.
+
+### DeliveryInterface Trait
+
+The abstraction layer defining operations all blockchain implementations must support.
+
+#### Required Methods
+
+| Method | Purpose |
+|--------|---------|
+| `submit()` | Sign and submit transaction, optionally monitor |
+| `get_receipt()` | Get transaction execution result |
+| `get_balance()` | Query native or ERC-20 token balance |
+| `get_allowance()` | Check ERC-20 approval amount |
+| `get_nonce()` | Get next transaction nonce for address |
+| `get_block_number()` | Get latest block number |
+| `get_gas_price()` | Get current network gas price |
+| `estimate_gas()` | Simulate transaction to estimate gas cost |
+| `eth_call()` | Execute read-only contract call |
+| `config_schema()` | Provide configuration validation schema |
+
+All methods are async and return `Result<T, DeliveryError>` for consistent error handling.
+
+```rust
+#[async_trait]
+pub trait DeliveryInterface: Send + Sync {
+    fn config_schema(&self) -> Box<dyn ConfigSchema>;
+    
+    async fn submit(
+        &self,
+        tx: Transaction,
+        tracking: Option<EnhancedTransactionTracking>,
+    ) -> Result<TransactionHash, DeliveryError>;
+    
+    async fn get_receipt(
+        &self,
+        tx_hash: &TransactionHash,
+        chain_id: u64,
+    ) -> Result<TransactionReceipt, DeliveryError>;
+    
+    async fn get_balance(
+        &self,
+        chain_id: u64,
+        address: Address,
+        token: Option<Address>,
+    ) -> Result<String, DeliveryError>;
+    
+    async fn get_allowance(
+        &self,
+        chain_id: u64,
+        owner: Address,
+        spender: Address,
+        token: Address,
+    ) -> Result<String, DeliveryError>;
+    
+    async fn get_nonce(
+        &self,
+        chain_id: u64,
+        address: Address,
+    ) -> Result<u64, DeliveryError>;
+    
+    async fn get_block_number(
+        &self,
+        chain_id: u64,
+    ) -> Result<u64, DeliveryError>;
+    
+    async fn get_gas_price(
+        &self,
+        chain_id: u64,
+    ) -> Result<String, DeliveryError>;
+    
+    async fn estimate_gas(
+        &self,
+        chain_id: u64,
+        tx: Transaction,
+    ) -> Result<u64, DeliveryError>;
+    
+    async fn eth_call(
+        &self,
+        chain_id: u64,
+        tx: Transaction,
+    ) -> Result<Vec<u8>, DeliveryError>;
+}
+```
+
+### AlloyDelivery (EVM Implementation)
+
+The concrete implementation for EVM-compatible blockchains using the Alloy library.
+
+```rust
+pub struct AlloyDelivery {
+    providers: HashMap<u64, DynProvider>,  // One provider per chain
+}
+```
+
+#### Provider Configuration
+
+Each Alloy provider is a pipeline that automatically handles transaction construction:
+
+| Component | Purpose |
+|-----------|---------|
+| `NonceFiller` | Tracks and assigns transaction nonces automatically |
+| `GasFiller` | Estimates gas and sets EIP-1559 parameters |
+| `ChainIdFiller` | Sets chain ID for replay attack protection |
+| `EthereumWallet` | Signs transactions with private key |
+| `RetryBackoffLayer` | Retries failed requests with exponential backoff |
+
+When you call `submit()`, the provider pipeline:
+
+1. Fills missing nonce (queries RPC if needed, caches locally)
+2. Estimates and fills gas parameters (calls `eth_estimateGas` + fee history)
+3. Sets chain ID in transaction
+4. Signs transaction with private key (ECDSA)
+5. Submits via `eth_sendRawTransaction`
+6. Returns transaction hash immediately
+
+#### Multi-Account Support
+
+```rust
+AlloyDelivery::new(
+    vec![1, 137, 10],        // Chain IDs to support
+    networks_config,          // RPC URLs from config
+    hashmap! {
+        1 => eth_key,        // Use this key for Ethereum
+        137 => polygon_key,  // Use this key for Polygon
+    },
+    default_key,             // Fallback for chain 10
+)
+```
+
+#### Retry Logic
+
+The implementation retries transient failures with exponential backoff:
+
+```rust
+RetryBackoffLayer::new_with_policy(
+    3,      // max 3 retries
+    1500,   // initial 1.5s delay
+    10,     // rate limit: 10 requests/second
+    retry_policy,
+);
+```
+
+**Retries these errors:**
+
+- HTTP 429 (rate limited), HTTP 503 (service unavailable)
+- Connection timeouts, DNS failures
+- Execution reverts (code 3) - may be temporary due to state flux
+
+**Does NOT retry:**
+
+- Invalid signatures, insufficient funds (permanent errors)
+
+### Transaction Monitoring
+
+Optional asynchronous monitoring tracks transaction confirmations in background tasks.
+
+#### Monitoring Setup
+
+```rust
+let tracking = TransactionTracking {
+    id: "order_123".to_string(),           // Your identifier
+    tx_type: TransactionType::Fill,        // Transaction category
+    callback: Box::new(|event| {           // Event handler
+        match event {
+            TransactionMonitoringEvent::Confirmed { receipt, .. } => {
+                // Transaction succeeded
+            }
+            TransactionMonitoringEvent::Failed { error, .. } => {
+                // Transaction failed or timeout
+            }
+        }
+    }),
+};
+
+delivery_service.deliver(tx, Some(tracking)).await?;  // Returns immediately
+// Callback invoked later when transaction confirms or fails
+```
+
+#### How Monitoring Works
+
+1. Transaction submitted to RPC, returns hash immediately
+2. Background task spawned: `tokio::spawn(monitor_transaction)`
+3. Task polls `eth_getTransactionReceipt` until confirmed or timeout
+4. Waits for `min_confirmations` blocks after inclusion
+5. Invokes callback with `Confirmed` or `Failed` event
+
+### Error Handling
+
+All delivery operations return typed errors for structured error handling:
+
+```rust
+pub enum DeliveryError {
+    Network(String),              // RPC failures, connection errors
+    TransactionFailed(String),    // Transaction reverted or monitoring timeout
+    NoImplementationAvailable,    // Unsupported chain ID
+}
+```
+
+#### Error Handling Pattern
+
+```rust
+match delivery_service.deliver(tx, tracking).await {
+    Ok(tx_hash) => {
+        println!("Submitted: {:?}", tx_hash);
+    }
+    Err(DeliveryError::Network(msg)) => {
+        // Retry with exponential backoff or failover to different RPC
+        eprintln!("Network error: {}", msg);
+    }
+    Err(DeliveryError::TransactionFailed(msg)) => {
+        // Log failure, possibly resubmit with higher gas
+        eprintln!("Transaction failed: {}", msg);
+    }
+    Err(DeliveryError::NoImplementationAvailable) => {
+        // Configuration error - chain not configured
+        panic!("Unsupported chain");
+    }
+}
+```
+
+---
+
+## Integration Architecture
+
+The delivery crate integrates with other solver components through dependency injection and shared types.
+
+### How Implementations Are Loaded
+
+Configuration determines which blockchain implementations are used:
+
+```toml
+[delivery]
+min_confirmations = 12
+monitoring_timeout_seconds = 300
+
+[delivery.implementations.evm_alloy]
+network_ids = [1, 137, 10, 42161]  # All these chains use AlloyDelivery
+```
+
+#### Loading Process
+
+1. `solver-config` loads TOML configuration
+2. Finds factory by name (`"evm_alloy"` → `create_http_delivery`)
+3. Factory creates `AlloyDelivery` with specified chains
+4. `AlloyDelivery` instance stored for each `chain_id` in the map
+5. `DeliveryService` routes operations by looking up `chain_id`
+
+#### Current Implementation
+
+```rust
+// All EVM chains share one AlloyDelivery instance
+HashMap {
+    1 => Arc<AlloyDelivery>,    // Ethereum
+    137 => Arc<AlloyDelivery>,  // Polygon (same Arc, cloned)
+    10 => Arc<AlloyDelivery>,   // Optimism (same Arc, cloned)
+}
+```
+
+### Registry Pattern
+
+Implementations self-register using a simple pattern:
+
+```rust
+// In implementations/evm/alloy.rs
+pub struct Registry;
+
+impl ImplementationRegistry for Registry {
+    const NAME: &'static str = "evm_alloy";
+    type Factory = DeliveryFactory;
+
+    fn factory() -> Self::Factory {
+        create_http_delivery  // Factory function
+    }
+}
+
+// In lib.rs
+pub fn get_all_implementations() -> Vec<(&'static str, DeliveryFactory)> {
+    vec![
+        (alloy::Registry::NAME, alloy::Registry::factory()),
+    ]
+}
+```
+
+Adding a new blockchain implementation requires:
+
+1. Implement `DeliveryInterface` trait
+2. Create factory function
+3. Add one line to `get_all_implementations()`
+
+### Usage Examples
+
+#### In solver-core (Transaction Submission)
+
+```rust
+// Submit intent transaction with monitoring
+let tx = Transaction {
+    chain_id: intent.input_chain_id,
+    to: Some(settler_address),
+    data: encoded_call_data,
+    value: U256::ZERO,
+    gas_limit: Some(500_000),
+    ..Default::default()
+};
+
+let tracking = TransactionTracking {
+    id: order_id,
+    tx_type: TransactionType::Prepare,
+    callback: Box::new(move |event| {
+        // Handle confirmation/failure
+    }),
+};
+
+let tx_hash = delivery.deliver(tx, Some(tracking)).await?;
+```
+
+#### In solver-service (Balance & Gas Queries)
+
+```rust
+// Check user balance before accepting quote
+let balance = delivery.get_balance(
+    chain_id,
+    user_address,
+    Some(token_address),  // None for native token
+).await?;
+
+// Estimate gas for cost calculation
+let gas_estimate = delivery.estimate_gas(chain_id, tx.clone()).await?;
+let gas_price = delivery.get_gas_price(chain_id).await?;
+let total_cost = gas_estimate * gas_price.parse::<u128>()?;
+```
+
+---
+
+## Delivery Lifecycle
+
+From transaction construction through confirmation, the delivery system handles the complete lifecycle.
+
+### Transaction Submission Flow
+
+```
+Application
+    │
+    │ deliver(tx, tracking)
+    ▼
+DeliveryService
+    │
+    │ Route by chain_id
+    ▼
+AlloyDelivery
+    │
+    ├─ Fill nonce, gas, chain ID
+    ├─ Sign with private key
+    │
+    │ eth_sendRawTransaction
+    ▼
+Blockchain RPC
+    │
+    │ tx_hash
+    ▼
+AlloyDelivery
+    │
+    ├─ spawn monitor (if tracking)
+    │
+    │ tx_hash (returns immediately)
+    ▼
+Application
+    
+    
+Background Task (if monitoring):
+    │
+    ├─ Poll eth_getTransactionReceipt
+    ├─ Check confirmations
+    │
+    │ callback(Confirmed or Failed)
+    ▼
+Application callback
+```
+
+#### Basic Submission
+
+```rust
+let tx = Transaction {
+    chain_id: 1,
+    to: Some(contract_address),
+    data: encoded_call,
+    value: U256::ZERO,
+    gas_limit: Some(500_000),
+    ..Default::default()
+};
+
+let tx_hash = delivery.deliver(tx, None).await?;  // Fire-and-forget
+```
+
+#### With Monitoring
+
+```rust
+let tracking = TransactionTracking {
+    id: "order_123".to_string(),
+    tx_type: TransactionType::Fill,
+    callback: Box::new(move |event| {
+        match event {
+            TransactionMonitoringEvent::Confirmed { receipt, .. } => {
+                // Update order status
+            }
+            TransactionMonitoringEvent::Failed { error, .. } => {
+                // Handle failure
+            }
+        }
+    }),
+};
+
+let tx_hash = delivery.deliver(tx, Some(tracking)).await?;
+// Returns immediately, callback invoked when confirmed/failed
+```
+
+### Blockchain Queries
+
+#### Balance Queries
+
+```rust
+// Native token (ETH, MATIC, etc.)
+let balance = delivery.get_balance(chain_id, address, None).await?;
+
+// ERC-20 token
+let balance = delivery.get_balance(chain_id, address, Some(token_address)).await?;
+```
+
+ERC-20 balances are fetched via `eth_call` to `balanceOf(address)`.
+
+#### Allowance Checks
+
+```rust
+// Check ERC-20 approval amount
+let allowance = delivery.get_allowance(
+    chain_id,
+    owner,
+    spender,
+    token_address,
+).await?;
+
+if allowance.parse::<u128>()? < amount {
+    // Submit approval transaction first
+}
+```
+
+#### Gas Estimation
+
+```rust
+let estimate = delivery.estimate_gas(chain_id, tx.clone()).await?;
+let gas_limit = (estimate * 120) / 100;  // Add 20% buffer
+
+let tx = Transaction { gas_limit: Some(gas_limit), ..tx };
+```
+
+#### Contract Calls
+
+```rust
+// Read-only contract interaction
+let result = delivery.eth_call(
+    chain_id,
+    Transaction {
+        to: Some(contract),
+        data: encoded_function_call,
+        ..Default::default()
+    },
+).await?;
+
+// Decode result bytes
+let value = U256::from_be_slice(&result);
+```
+
+---
+
+## Custom Delivery Implementation
+
+To add support for a new blockchain type, implement the `DeliveryInterface` trait.
+
+### Implementation Steps
+
+#### Step 1: Define Struct
+
+```rust
+pub struct CustomDelivery {
+    clients: HashMap<u64, CustomRpcClient>,
+    signers: HashMap<u64, CustomSigningKey>,
+}
+
+impl CustomDelivery {
+    pub fn new(
+        network_ids: Vec<u64>,
+        networks: &NetworksConfig,
+        default_key: &SecretString,
+        network_keys: &HashMap<u64, SecretString>,
+    ) -> Result<Self, DeliveryError> {
+        let mut clients = HashMap::new();
+        let mut signers = HashMap::new();
+
+        for &chain_id in &network_ids {
+            let network = networks.get(&chain_id)
+                .ok_or(DeliveryError::Network("Network not configured".to_string()))?;
+
+            // Initialize RPC client
+            let client = CustomRpcClient::connect(&network.rpc_url)?;
+            clients.insert(chain_id, client);
+
+            // Get signing key for this chain
+            let key = network_keys.get(&chain_id).unwrap_or(default_key);
+            let signer = CustomSigningKey::from_secret(key)?;
+            signers.insert(chain_id, signer);
+        }
+
+        Ok(Self { clients, signers })
+    }
+}
+```
+
+#### Step 2: Implement DeliveryInterface
+
+```rust
+#[async_trait]
+impl DeliveryInterface for CustomDelivery {
+    fn config_schema(&self) -> Box<dyn ConfigSchema> {
+        Box::new(CustomDeliverySchema)
+    }
+
+    async fn submit(
+        &self,
+        tx: Transaction,
+        tracking: Option<EnhancedTransactionTracking>,
+    ) -> Result<TransactionHash, DeliveryError> {
+        // 1. Get client for chain_id
+        let client = self.clients.get(&tx.chain_id)
+            .ok_or(DeliveryError::NoImplementationAvailable)?;
+
+        // 2. Sign transaction with appropriate signer
+        let signer = self.signers.get(&tx.chain_id)
+            .ok_or(DeliveryError::NoImplementationAvailable)?;
+
+        let signed_tx = signer.sign_transaction(&tx)
+            .map_err(|e| DeliveryError::Network(e.to_string()))?;
+
+        // 3. Submit to RPC
+        let tx_hash = client.submit_transaction(signed_tx).await
+            .map_err(|e| DeliveryError::Network(e.to_string()))?;
+
+        // 4. Spawn monitoring task if tracking provided
+        if let Some(tracking) = tracking {
+            let client_clone = client.clone();
+            let tx_hash_clone = tx_hash.clone();
+            
+            tokio::spawn(async move {
+                monitor_transaction(client_clone, tx_hash_clone, tracking).await;
+            });
+        }
+
+        // 5. Return tx_hash
+        Ok(tx_hash)
+    }
+
+    async fn get_receipt(
+        &self,
+        tx_hash: &TransactionHash,
+        chain_id: u64,
+    ) -> Result<TransactionReceipt, DeliveryError> {
+        let client = self.clients.get(&chain_id)
+            .ok_or(DeliveryError::NoImplementationAvailable)?;
+
+        client.get_receipt(tx_hash).await
+            .map_err(|e| DeliveryError::Network(e.to_string()))
+    }
+
+    async fn get_balance(
+        &self,
+        chain_id: u64,
+        address: Address,
+        token: Option<Address>,
+    ) -> Result<String, DeliveryError> {
+        let client = self.clients.get(&chain_id)
+            .ok_or(DeliveryError::NoImplementationAvailable)?;
+
+        match token {
+            None => {
+                // Native token balance
+                client.get_native_balance(address).await
+                    .map_err(|e| DeliveryError::Network(e.to_string()))
+            }
+            Some(token_address) => {
+                // ERC-20 balance via contract call
+                let balance_of_call = encode_balance_of(address);
+                let result = client.call_contract(token_address, balance_of_call).await?;
+                Ok(decode_uint256(&result).to_string())
+            }
+        }
+    }
+
+    // Implement remaining methods: get_allowance, get_nonce,
+    // get_block_number, get_gas_price, estimate_gas, eth_call
+}
+```
+
+#### Step 3: Create Configuration Schema
+
+```rust
+pub struct CustomDeliverySchema;
+
+impl ConfigSchema for CustomDeliverySchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        let schema = Schema::new(
+            vec![
+                Field::new("network_ids", FieldType::Array(
+                    Box::new(FieldType::Integer { min: Some(1), max: None })
+                )),
+            ],
+            vec![
+                Field::new("timeout_seconds", FieldType::Integer {
+                    min: Some(1),
+                    max: Some(600),
+                }),
+            ],
+        );
+
+        schema.validate(config)
+    }
+}
+```
+
+#### Step 4: Create Factory and Register
+
+```rust
+// Factory function
+pub fn create_custom_delivery(
+    config: &toml::Value,
+    networks: &NetworksConfig,
+    default_key: &SecretString,
+    network_keys: &HashMap<u64, SecretString>,
+) -> Result<Box<dyn DeliveryInterface>, DeliveryError> {
+    // Validate config
+    CustomDeliverySchema.validate(config)
+        .map_err(|e| DeliveryError::Network(format!("Invalid config: {}", e)))?;
+
+    // Extract network IDs
+    let network_ids: Vec<u64> = config["network_ids"]
+        .as_array()
+        .ok_or(DeliveryError::Network("Missing network_ids".to_string()))?
+        .iter()
+        .filter_map(|v| v.as_integer().map(|i| i as u64))
+        .collect();
+
+    // Create implementation
+    let delivery = CustomDelivery::new(network_ids, networks, default_key, network_keys)?;
+
+    Ok(Box::new(delivery))
+}
+
+// Registry
+pub struct Registry;
+
+impl ImplementationRegistry for Registry {
+    const NAME: &'static str = "custom_blockchain";
+    type Factory = DeliveryFactory;
+    
+    fn factory() -> Self::Factory {
+        create_custom_delivery
+    }
+}
+
+// Add to lib.rs
+pub fn get_all_implementations() -> Vec<(&'static str, DeliveryFactory)> {
+    vec![
+        (alloy::Registry::NAME, alloy::Registry::factory()),
+    ]
+}
+```
+
+#### Step 5: Configure
+
+```toml
+[delivery.implementations.custom_blockchain]
+network_ids = [999]
+timeout_seconds = 300
+custom_param = "value"
+```
+
+---
+
+## Best Practices
+
+### Transaction Submission
+
+**1. Always set gas parameters:**
+
+```rust
+// Good: Explicit gas settings
+let tx = Transaction {
+    gas_limit: Some(500_000),
+    max_fee_per_gas: Some(50_000_000_000),  // 50 gwei
+    max_priority_fee_per_gas: Some(2_000_000_000),  // 2 gwei
+    ..tx
+};
+
+// Bad: Missing gas, provider will estimate (may fail)
+let tx = Transaction {
+    gas_limit: None,
+    ..tx
+};
+```
+
+**2. Use monitoring for critical transactions:**
+
+```rust
+// Critical transactions: use monitoring
+let tracking = TransactionTracking {
+    id: order_id,
+    tx_type: TransactionType::Fill,
+    callback: Box::new(move |event| {
+        // Update order state
+    }),
+};
+delivery.deliver(tx, Some(tracking)).await?;
+
+// Non-critical: fire-and-forget
+delivery.deliver(tx, None).await?;
+```
+
+**3. Handle nonce conflicts:**
+
+```rust
+// Get current nonce
+let nonce = delivery.get_nonce(chain_id, signer_address).await?;
+
+// Use it immediately
+let tx = Transaction {
+    nonce: Some(nonce),
+    ..tx
+};
+delivery.deliver(tx, tracking).await?;
+```
+
+### Error Handling
+
+**1. Distinguish transient from permanent errors:**
+
+```rust
+match delivery.deliver(tx.clone(), tracking).await {
+    Ok(hash) => Ok(hash),
+    Err(DeliveryError::Network(msg)) if msg.contains("timeout") => {
+        // Retry with different RPC or backoff
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        delivery.deliver(tx, tracking).await
+    }
+    Err(DeliveryError::TransactionFailed(msg)) if msg.contains("insufficient funds") => {
+        // Don't retry - permanent error
+        Err(msg)
+    }
+    Err(e) => Err(e),
+}
+```
+
+**2. Log transaction hashes:**
+
+```rust
+let tx_hash = delivery.deliver(tx, tracking).await?;
+tracing::info!(
+    "Submitted transaction: {:?} for order: {}",
+    tx_hash,
+    order_id
+);
+```
+
+### Gas Management
+
+**1. Estimate with buffer:**
+
+```rust
+let estimate = delivery.estimate_gas(chain_id, tx.clone()).await?;
+let gas_limit = (estimate * 120) / 100;  // 20% buffer
+
+let tx = Transaction { gas_limit: Some(gas_limit), ..tx };
+```
+
+**2. Handle EIP-1559:**
+
+```rust
+let gas_price = delivery.get_gas_price(chain_id).await?;
+let base_fee = gas_price.parse::<u128>()?;
+
+let tx = Transaction {
+    max_fee_per_gas: Some(base_fee * 2),           // 2x base fee
+    max_priority_fee_per_gas: Some(2_000_000_000), // 2 gwei tip
+    ..tx
+};
+```
+
+### Monitoring Considerations
+
+**1. Set appropriate timeouts:**
+
+```rust
+// Fast finality chains (Polygon PoS)
+DeliveryService::new(implementations, 3, 30);  // 3 confirmations, 30s timeout
+
+// Slower finality (Ethereum)
+DeliveryService::new(implementations, 12, 300);  // 12 confirmations, 5min timeout
+```
+
+**2. Clean up monitoring resources:**
+
+Monitoring tasks automatically clean up after success/failure. Don't spawn additional watchers.
+
+### Performance Considerations
+
+- **Connection pooling**: AlloyDelivery reuses providers across calls
+- **Batch queries**: Use `eth_call` for multiple read-only operations
+- **Parallel submissions**: Submit transactions to different chains concurrently
+- **RPC selection**: Use premium RPC providers for production (Infura, Alchemy)
+
+---
+
+## Related Documentation
+
+- [solver-core](/docs/solvers/crates/solver-core) - Uses delivery for transaction submission
+- [solver-types](/docs/solvers/crates/solver-types) - Transaction and event type definitions
+- [solver-config](/docs/solvers/crates/solver-config) - Delivery configuration management
+- [solver-account](/docs/solvers/crates/solver-account) - Signing keys used by delivery
+

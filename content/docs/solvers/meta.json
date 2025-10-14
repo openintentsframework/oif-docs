@@ -3,6 +3,8 @@
   "pages": [
     "overview",
     "quickstart",
+    "how-it-works",
+    "architecture",
     "api-reference",
     "crates"
   ]

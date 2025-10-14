@@ -407,7 +407,15 @@ You can also interact with the solver via its REST API:
 curl -X POST http://localhost:3000/api/orders \
   -H "Content-Type: application/json" \
   -d '{
-    "order": "0x...",
+    "order": {
+      "type": "oif-escrow-v0",
+      "payload": {
+        "signatureType": "eip712",
+        "domain": {...},
+        "primaryType": "PermitBatchWitnessTransferFrom",
+        "message": {...}
+      }
+    },
     "sponsor": "0x...",
     "signature": "0x..."
   }'
@@ -423,10 +431,10 @@ curl http://localhost:3000/api/tokens
 
 ### Getting Help
 
-- Check the [Configuration Guide](configuration.md) for detailed setup instructions
+- Check the [Configuration Guide](crates/solver-config) for detailed setup instructions
 - Review logs with `RUST_LOG=debug` for detailed debugging information
 - Use the `--verbose` flag with solver-demo commands for more output
-- Consult the [API Reference](api-reference.md) for API usage details
+- Consult the [API Reference](api-reference) for API usage details
 
 ## Next Steps
 
@@ -436,8 +444,8 @@ Now that you have the solver running:
    - Start with local environment for quick iteration and testing
    - Move to testnet when you need production-like behavior
 2. **Explore the CLI**: Run `cargo run -p solver-demo -- --help` to see all available commands and options
-3. **Learn Configuration**: Review the [Configuration Guide](configuration.md) for advanced setup options
-4. **Understand the API**: Read the [API Reference](api-reference.md) to integrate with your applications
+3. **Learn Configuration**: Review the [Configuration Guide](crates/solver-config) for advanced setup options
+4. **Understand the API**: Read the [API Reference](api-reference) to integrate with your applications
 5. **Try Different Settlement Types**:
    - Test with `--settlement escrow` or
    - `--settlement compact`

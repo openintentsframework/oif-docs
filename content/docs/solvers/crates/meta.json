@@ -10,6 +10,7 @@
     "solver-discovery",
     "solver-delivery",
     "solver-service",
+    "solver-settlement",
     "solver-demo"
   ]
 }

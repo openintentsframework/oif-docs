@@ -2,7 +2,8 @@
   "title": "Crates",
   "pages": [
     "solver-account",
-    "solver-order"
+    "solver-order",
+    "solver-pricing"
   ]
 }
 

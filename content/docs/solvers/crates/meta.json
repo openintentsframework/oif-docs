@@ -4,6 +4,7 @@
     "solver-types",
     "solver-config",
     "solver-account",
-    "solver-discovery"
+    "solver-discovery",
+    "solver-pricing"
   ]
 }

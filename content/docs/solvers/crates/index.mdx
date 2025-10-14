@@ -16,28 +16,6 @@ Foundation crates provide the basic building blocks used throughout the solver s
   <Card title="solver-config" href="/docs/solvers/crates/solver-config" description="Configuration management and validation" />
 </Cards>
 
-### solver-types
-
-The foundational type system for OIF Solver. Provides blockchain primitives, cross-chain standards (EIP-7683, ERC-7930), event system for inter-service communication, and utilities for address conversion and EIP-712 operations.
-
-**Key Features:**
-- OrderParsable trait for extensibility across standards
-- Event system for asynchronous service communication
-- InteropAddress for cross-chain addressing
-- ConfigSchema for plugin validation
-- Provider factories for RPC abstraction
-
-### solver-config
-
-Type-safe configuration management with multi-file loading, environment variable resolution, and comprehensive validation. Handles all solver subsystem configurations from TOML files.
-
-**Key Features:**
-- Multi-file configuration with include directives
-- Environment variable resolution with defaults
-- Settlement coverage validation
-- Builder pattern for testing
-- Fail-fast error handling
-
 ## Business Logic Crates
 
 Business logic crates implement the core functionality of the solver.
@@ -45,29 +23,8 @@ Business logic crates implement the core functionality of the solver.
 <Cards>
   <Card title="solver-account" href="/docs/solvers/crates/solver-account" description="Cryptographic account management and signing operations" />
   <Card title="solver-discovery" href="/docs/solvers/crates/solver-discovery" description="Intent discovery from on-chain events and HTTP APIs" />
+  <Card title="solver-pricing" href="/docs/solvers/crates/solver-pricing" description="Pricing strategies and calculations" />
 </Cards>
-
-### solver-account
-
-Manages cryptographic accounts and signing operations. Provides unified interface for different signing backends (local wallets, KMS, vault systems) while maintaining security boundaries.
-
-**Key Features:**
-- EIP-155 compliant transaction signing
-- EIP-191 compliant message signing
-- Pluggable account implementations
-- Private key protection with SecretString
-- Factory pattern for extensibility
-
-### solver-discovery
-
-Intent ingestion layer that discovers EIP-7683 cross-chain orders from multiple sources. Monitors blockchain events and accepts HTTP submissions, normalizing them into unified Intent format.
-
-**Key Features:**
-- On-chain event monitoring (polling and WebSocket)
-- Off-chain HTTP API for direct submissions
-- Multi-chain parallel monitoring
-- Order validation and normalization
-- Pluggable discovery implementations
 
 ## Architecture
 

@@ -14,29 +14,8 @@ Foundation crates provide the basic building blocks used throughout the solver s
 <Cards>
   <Card title="solver-types" href="/docs/solvers/crates/solver-types" description="Foundational type system and shared data structures" />
   <Card title="solver-config" href="/docs/solvers/crates/solver-config" description="Configuration management and validation" />
+  <Card title="solver-core" href="/docs/solvers/crates/solver-core" description="Orchestration engine of the OIF Solver system" />
 </Cards>
-
-### solver-types
-
-The foundational type system for OIF Solver. Provides blockchain primitives, cross-chain standards (EIP-7683, ERC-7930), event system for inter-service communication, and utilities for address conversion and EIP-712 operations.
-
-**Key Features:**
-- OrderParsable trait for extensibility across standards
-- Event system for asynchronous service communication
-- InteropAddress for cross-chain addressing
-- ConfigSchema for plugin validation
-- Provider factories for RPC abstraction
-
-### solver-config
-
-Type-safe configuration management with multi-file loading, environment variable resolution, and comprehensive validation. Handles all solver subsystem configurations from TOML files.
-
-**Key Features:**
-- Multi-file configuration with include directives
-- Environment variable resolution with defaults
-- Settlement coverage validation
-- Builder pattern for testing
-- Fail-fast error handling
 
 ## Business Logic Crates
 
@@ -45,72 +24,18 @@ Business logic crates implement the core functionality of the solver.
 <Cards>
   <Card title="solver-account" href="/docs/solvers/crates/solver-account" description="Cryptographic account management and signing operations" />
   <Card title="solver-discovery" href="/docs/solvers/crates/solver-discovery" description="Intent discovery from on-chain events and HTTP APIs" />
+  <Card title="solver-pricing" href="/docs/solvers/crates/solver-pricing" description="Pricing strategies and calculations" />
 </Cards>
 
 ## Infrastructure Crates
 
-Infrastructure crates provide low-level blockchain interaction, settlement, and storage capabilities.
+Infrastructure crates handle operational concerns like delivery, settlement, and storage.
 
 <Cards>
-  <Card title="solver-delivery" href="/docs/solvers/crates/solver-delivery" description="Transaction delivery and monitoring across multiple blockchains" />
-  <Card title="solver-settlement" href="/docs/solvers/crates/solver-settlement" description="Settlement mechanisms for finalizing cross-chain order execution" />
-  <Card title="solver-storage" href="/docs/solvers/crates/solver-storage" description="Pluggable storage abstraction layer for persisting solver data" />
+  <Card title="solver-delivery" href="/docs/solvers/crates/solver-delivery" description="Transaction delivery and submission to blockchain networks" />
+  <Card title="solver-settlement" href="/docs/solvers/crates/solver-settlement" description="Settlement process and transaction lifecycle management" />
+  <Card title="solver-storage" href="/docs/solvers/crates/solver-storage" description="Data persistence and storage backend abstractions" />
 </Cards>
-
-### solver-account
-
-Manages cryptographic accounts and signing operations. Provides unified interface for different signing backends (local wallets, KMS, vault systems) while maintaining security boundaries.
-
-**Key Features:**
-- EIP-155 compliant transaction signing
-- EIP-191 compliant message signing
-- Pluggable account implementations
-- Private key protection with SecretString
-- Factory pattern for extensibility
-
-### solver-discovery
-
-Intent ingestion layer that discovers EIP-7683 cross-chain orders from multiple sources. Monitors blockchain events and accepts HTTP submissions, normalizing them into unified Intent format.
-
-**Key Features:**
-- On-chain event monitoring (polling and WebSocket)
-- Off-chain HTTP API for direct submissions
-- Multi-chain parallel monitoring
-- Order validation and normalization
-- Pluggable discovery implementations
-
-### solver-delivery
-
-Transaction delivery and monitoring for blockchain networks. Manages transaction submission across multiple EVM-compatible chains with automatic retry logic and asynchronous confirmation tracking.
-
-**Key Features:**
-- Multi-chain transaction submission
-- Asynchronous monitoring with callbacks
-- Balance and allowance queries
-- Gas estimation and management
-- Pluggable blockchain implementations
-
-### solver-settlement
-
-Settlement mechanisms for finalizing cross-chain order execution. Handles fill attestation, oracle coordination, and claim readiness determination with support for multiple settlement protocols.
-
-**Key Features:**
-- Pluggable settlement implementations
-- Oracle route management
-- Time-based and message-based attestations
-- Cross-chain message tracking
-- PostFill and PreClaim transaction generation
-
-### solver-storage
-
-Pluggable storage abstraction layer for persisting solver data. Provides type-safe operations with automatic JSON serialization, querying, indexing, and automatic expiration across multiple backend implementations.
-
-**Key Features:**
-- Type-safe storage operations
-- Field-based indexing for queries
-- Time-to-live (TTL) management
-- Multiple backends (file, memory, custom)
-- Atomic operations with crash safety
 
 ## Architecture
 
@@ -232,9 +157,6 @@ Choose a crate to explore based on your needs:
 - **Adding custom discovery?** See solver-discovery implementation guide
 - **Integrating with KMS?** Check solver-account for signing backends
 - **Understanding data flow?** Read solver-types event system
-- **Submitting transactions?** Explore solver-delivery for blockchain interaction
-- **Finalizing orders?** Study solver-settlement for attestation and claiming
-- **Persisting data?** Review solver-storage for data persistence
 
 Each crate's documentation includes complete code examples and integration patterns.
 

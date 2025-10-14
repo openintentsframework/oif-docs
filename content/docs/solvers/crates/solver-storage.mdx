@@ -1,0 +1,611 @@
+---
+title: solver-storage
+description: Pluggable storage abstraction layer for persisting solver data in the OIF system
+---
+
+# solver-storage
+
+## Overview
+
+The `solver-storage` crate provides a pluggable storage layer for persisting solver data across the OIF (Open Intent Framework) system. This crate handles the storage of orders, intents, quotes, and other solver-related entities with support for querying, indexing, and automatic expiration.
+
+### Core Capabilities
+
+**Type-Safe Operations**: Generic methods for storing and retrieving data with automatic JSON serialization, eliminating manual serialization logic and ensuring compile-time type safety.
+
+**Query and Indexing**: Storage entries can be indexed by specific fields, enabling efficient queries across stored data for use cases like finding all pending orders or retrieving intents for a specific user.
+
+**Time-To-Live Management**: Data can be configured to automatically expire after a specified duration, preventing unbounded storage growth and ensuring stale data is cleaned up without manual intervention.
+
+**Backend Flexibility**: Trait-based architecture allows different storage implementations to be swapped at runtime through configuration, enabling in-memory storage for testing while using persistent file storage in production.
+
+### Design Philosophy
+
+The crate separates concerns into three distinct layers:
+
+1. **Application Layer**: Business logic works with domain objects like `Order` and `Intent`
+2. **Service Layer**: Type-safe operations with automatic serialization (`StorageService`)
+3. **Backend Layer**: Raw byte-level storage operations (`StorageInterface` implementations)
+
+This layering provides both convenience for common operations and low-level control when needed. Application code typically interacts with `StorageService`, which handles serialization and provides a clean API.
+
+### Namespace Organization
+
+Storage keys follow a namespace pattern: `{namespace}:{id}`. For example:
+- `orders:0x1234...` - An order entry
+- `intents:abc123` - An intent entry
+- `quotes:xyz789` - A quote entry
+
+**Purpose of namespacing:**
+- Prevents key collisions between different entity types
+- Enables namespace-scoped queries and operations
+- Allows per-namespace configuration like TTL settings
+- Facilitates bulk operations on entity types
+
+### Integration Context
+
+
+- **solver-core**: Stores order and intent state during execution
+- **solver-discovery**: Caches discovered intents and chain information
+- **solver-pricing**: Stores quote data with automatic expiration
+- **solver-settlement**: Persists transaction hashes and settlement state
+
+Each component uses the same `StorageService` interface but operates in its own namespace, preventing conflicts while maintaining consistency.
+
+---
+
+## Storage Backends
+
+The crate provides two built-in backend implementations, each suited for different use cases.
+
+### FileStorage Backend
+
+The `FileStorage` implementation provides persistent, disk-based storage for production deployments.
+
+#### Storage Format
+
+Data is stored as binary files with:
+- 64-byte header with metadata (magic bytes, version, expiration timestamp)
+- Serialized JSON data payload
+
+The header format enables efficient TTL checks without reading the entire file. Files with magic bytes `OIFS` include header information; files without are treated as legacy format for backward compatibility.
+
+#### File Organization
+
+```
+{base_path}/
+├── orders_order1.bin         # Data file for orders:order1
+├── orders_order2.bin         # Data file for orders:order2
+├── orders.index              # Index file for orders namespace
+├── orders.lock               # Lock file for orders index
+├── intents_intent1.bin       # Data file for intents:intent1
+├── intents.index             # Index file for intents namespace
+└── intents.lock              # Lock file for intents index
+```
+
+Keys are sanitized for filesystem safety by replacing `/` and `:` with `_`. For example, `orders:order123` becomes `orders_order123.bin`.
+
+#### Index Structure
+
+Each namespace maintains a separate index file (`.index`) containing a JSON structure:
+
+```json
+{
+  "status": {
+    "pending": ["orders:order1", "orders:order2"],
+    "completed": ["orders:order3"]
+  },
+  "user": {
+    "alice": ["orders:order1"],
+    "bob": ["orders:order2", "orders:order3"]
+  }
+}
+```
+
+This structure enables O(1) lookups for equality queries. The index is updated atomically whenever indexed data is stored or deleted.
+
+#### File Locking
+
+The backend uses file-based locking to ensure consistency:
+- **Exclusive locks** for index writes (one writer at a time)
+- **Shared locks** for index reads (multiple concurrent readers)
+- **Per-namespace locking** to minimize contention
+
+Lock files (`.lock`) are created alongside index files using OS-level file locks through the `fs2` crate, ensuring safety even across processes.
+
+#### TTL Configuration
+
+Time-to-live can be configured per namespace:
+
+```toml
+[storage]
+type = "file"
+storage_path = "./data/storage"
+ttl_orders = 86400        # 24 hours
+ttl_intents = 172800      # 48 hours
+ttl_quotes = 1800         # 30 minutes
+```
+
+When storing data, the TTL for the namespace is automatically applied unless explicitly overridden. Expired data returns an `Expired` error when accessed and can be cleaned up using `cleanup_expired()`.
+
+#### Atomic Writes
+
+File writes are atomic to prevent corruption:
+1. Data written to temporary file (`.tmp` extension)
+2. Temporary file renamed to target path
+3. On POSIX systems, `rename()` is atomic
+
+This ensures crash-safety: either the old or new version exists, never a partially-written file.
+
+#### Batch Operations
+
+The backend supports batch retrieval for efficient bulk reads:
+
+```rust
+let keys = vec![
+    "orders:order1".to_string(),
+    "orders:order2".to_string(),
+    "orders:order3".to_string(),
+];
+let results = backend.get_batch(&keys).await?;
+```
+
+More efficient than individual `get_bytes()` calls by optimizing I/O operations.
+
+#### Configuration
+
+```toml
+[storage]
+type = "file"
+storage_path = "/var/lib/solver/storage"
+ttl_orders = 86400
+ttl_intents = 172800
+```
+
+Storage path defaults to `./data/storage`. TTL values in seconds, 0 means no expiration.
+
+### MemoryStorage Backend
+
+The `MemoryStorage` implementation provides fast, ephemeral storage using an in-memory HashMap. Designed for testing and development scenarios.
+
+#### Feature Limitations
+
+The memory backend intentionally omits features to keep it simple and fast:
+
+- **No TTL support**: Data never expires (acceptable for tests)
+- **No indexing**: Queries return empty results
+- **No persistence**: Data lost on restart
+- **No cleanup operations**: No expiration to clean up
+
+#### Configuration
+
+```toml
+[storage]
+type = "memory"
+```
+
+The memory backend accepts an empty configuration. Any configuration values are ignored.
+
+### Selecting a Backend
+
+Backend selection happens through configuration:
+
+```toml
+[storage]
+type = "file"  # or "memory"
+# ... backend-specific configuration
+```
+
+The factory registry maps type strings to factory functions, allowing runtime backend selection without recompiling.
+
+---
+
+## Integration Architecture
+
+### Layer Structure
+
+#### StorageInterface
+
+Foundation defining low-level operations all backends must implement:
+
+**Core Operations:**
+- `get_bytes` - Retrieve data by key
+- `set_bytes` - Store data with optional indexes and TTL
+- `delete` - Remove data by key
+- `exists` - Check if key exists
+- `query` - Find keys matching filter criteria
+- `get_batch` - Retrieve multiple keys efficiently
+- `cleanup_expired` - Remove expired entries
+
+**Key design decisions:**
+
+- **Byte-level operations**: Works with raw bytes for generic serialization strategies
+- **Asynchronous operations**: Non-blocking I/O enables concurrent access
+- **Optional features**: Indexing and TTL are optional parameters
+
+#### StorageService Layer
+
+Wraps backend and provides type-safe operations:
+
+**Key Operations:**
+- `store` - Save typed data with optional indexes
+- `retrieve` - Load and deserialize data by ID
+- `update` - Modify existing entries
+- `delete` - Remove entries
+- `query` - Find entries matching criteria
+- `retrieve_all` - Get all entries in namespace
+
+**Provides:**
+- Type safety with domain objects
+- Automatic JSON serialization
+- Consistent key construction
+- Error handling translation
+
+### Component Integration
+
+#### Storage Service Initialization
+
+```rust
+// In solver-core initialization
+pub struct SolverCore {
+    storage: StorageService,
+    // ... other fields
+}
+
+impl SolverCore {
+    pub fn new(config: &Config) -> Result<Self, Error> {
+        let backend = create_storage_from_config(&config.storage)?;
+        let storage = StorageService::new(backend);
+        
+        Ok(Self { storage })
+    }
+}
+```
+
+#### Namespace Conventions
+
+Each component operates in its own namespace:
+
+```rust
+// In solver-core
+impl OrderManager {
+    async fn store_order(&self, order: &Order) -> Result<()> {
+        self.storage.store("orders", &order.id, order, Some(
+            StorageIndexes::new()
+                .with_field("status", &order.status)
+                .with_field("user", &order.user)
+        )).await
+    }
+}
+
+// In solver-pricing
+impl QuoteManager {
+    async fn store_quote(&self, quote: &Quote) -> Result<()> {
+        self.storage.store("quotes", &quote.id, quote, None).await
+    }
+}
+```
+
+**Standard namespaces** (from `solver-types::StorageKey`):
+- `orders` - Order entities and state
+- `intents` - Discovered and processed intents
+- `quotes` - Price quotes with TTL
+- `order_by_tx_hash` - Transaction hash to order ID mapping
+
+#### Query Patterns
+
+```rust
+// Find all pending orders
+let pending_orders: Vec<(String, Order)> = self.storage.query(
+    "orders",
+    QueryFilter::Equals("status".into(), json!("pending"))
+).await?;
+
+// Find orders for a specific user
+let user_orders: Vec<(String, Order)> = self.storage.query(
+    "orders",
+    QueryFilter::Equals("user".into(), json!("alice"))
+).await?;
+
+// Get all items in a namespace
+let all_orders: Vec<(String, Order)> = self.storage
+    .retrieve_all("orders")
+    .await?;
+```
+
+### Error Handling
+
+```rust
+match self.storage.retrieve("orders", &order_id).await {
+    Ok(order) => {
+        // Process order
+    },
+    Err(StorageError::NotFound(_)) => {
+        // Order doesn't exist - may be expected
+        return Ok(None);
+    },
+    Err(StorageError::Expired(_)) => {
+        // Order expired - clean up references
+        self.handle_expired_order(&order_id).await?;
+        return Ok(None);
+    },
+    Err(e) => {
+        // Unexpected error - propagate
+        return Err(e.into());
+    }
+}
+```
+
+**Error variants:**
+- `NotFound`: Key doesn't exist (often expected)
+- `Expired`: Key exists but past TTL
+- `Serialization`: Data corruption or version mismatch
+- `Backend`: I/O or system-level error
+- `Configuration`: Invalid configuration
+
+---
+
+## Data Persistence Patterns
+
+### Key-Value Storage Model
+
+Fundamental model:
+
+```
+Key: "namespace:id"
+Value: Serialized JSON data
+Metadata: Indexes, TTL, timestamps
+```
+
+Simple yet powerful with structured keys enabling efficient namespace operations.
+
+### Serialization Strategy
+
+#### JSON Format
+
+All data serialized to JSON, prioritizing:
+
+- **Human readability**: Inspect and debug without special tools
+- **Flexibility**: Add fields without breaking existing data
+- **Interoperability**: Universal across languages and tools
+- **Schema evolution**: Natural backward/forward compatibility
+
+Example:
+
+```json
+{
+  "id": "order123",
+  "user": "alice",
+  "amount": 1000,
+  "status": "pending"
+}
+```
+
+#### Schema Evolution
+
+- **Adding fields**: New fields with defaults don't break old data
+- **Optional fields**: Smooth migration between schema versions
+- **Renaming fields**: Accept old names for backward compatibility
+
+### Indexing Strategy
+
+#### Field-Based Indexes
+
+```rust
+let indexes = StorageIndexes::new()
+    .with_field("status", "pending")
+    .with_field("user", "alice")
+    .with_field("priority", 5);
+
+storage.store("orders", &order.id, &order, Some(indexes)).await?;
+```
+
+**Inverted index structure:**
+
+```
+field -> value -> [keys]
+
+"status" -> "pending" -> ["orders:order1", "orders:order2"]
+"status" -> "completed" -> ["orders:order3"]
+"user" -> "alice" -> ["orders:order1", "orders:order3"]
+```
+
+#### Index Selection Guidelines
+
+- **Index queried fields**: If code queries by status, index status
+- **Avoid unique values**: Indexing unique IDs provides no benefit
+- **Consider cardinality**: Low-cardinality fields (status, type) benefit most
+- **Balance index size**: Each indexed field increases overhead
+
+### Time-To-Live Management
+
+#### TTL Configuration Levels
+
+**Namespace-level (recommended):**
+
+```toml
+[storage]
+ttl_orders = 86400      # All orders expire after 24 hours
+ttl_quotes = 1800       # All quotes expire after 30 minutes
+```
+
+**Per-operation override:**
+
+```rust
+storage.store_with_ttl(
+    "orders",
+    &order.id,
+    &order,
+    Some(indexes),
+    Some(Duration::from_secs(3600))  // Override namespace default
+).await?;
+```
+
+#### TTL Implementation
+
+Stored in file header as absolute Unix timestamp:
+
+```rust
+struct FileHeader {
+    magic: [u8; 4],
+    version: u16,
+    expires_at: u64,  // Unix timestamp, 0 = never expires
+    padding: [u8; 50],
+}
+```
+
+Checked on read - expired data returns error immediately.
+
+#### Cleanup Operations
+
+Periodic cleanup removes expired entries:
+
+```rust
+// Background cleanup task
+tokio::spawn(async move {
+    let mut interval = tokio::time::interval(Duration::from_secs(3600));
+    loop {
+        interval.tick().await;
+        
+        match storage.cleanup_expired().await {
+            Ok(count) => {
+                tracing::info!("Cleaned up {} expired entries", count);
+            },
+            Err(e) => {
+                tracing::error!("Cleanup failed: {}", e);
+            }
+        }
+    }
+});
+```
+
+### Atomic Operations
+
+#### Write Atomicity
+
+Atomic rename for crash safety:
+1. Write data to temporary file (`.tmp`)
+2. Rename temporary file to target
+3. Rename is atomic on POSIX systems
+
+Ensures either old or new version exists, never partial data.
+
+#### Index Update Atomicity
+
+Combines file locking with atomic writes:
+1. Acquire exclusive lock on index file
+2. Load current index
+3. Modify index entries
+4. Write atomically to disk
+5. Release lock
+
+### Concurrency Patterns
+
+**Memory Storage:**
+- Multiple simultaneous reads
+- Single writer at a time
+- Optimized for read-heavy workloads
+
+**File Storage:**
+- Per-namespace locking
+- Multiple readers per namespace (shared locks)
+- Writers acquire exclusive locks
+- Different namespaces access concurrently
+
+---
+
+## Custom Storage Implementation
+
+### Implementation Requirements
+
+A custom storage backend must:
+
+1. Implement `StorageInterface` trait with all required methods
+2. Provide factory function matching `StorageFactory` signature
+3. Implement `Registry` struct for registration
+4. Provide configuration schema for validation
+
+### Core Operations to Implement
+
+**Data Operations:**
+- `get_bytes` - Retrieve data by key
+- `set_bytes` - Store data with optional indexes and TTL
+- `delete` - Remove data by key
+- `exists` - Check if key exists
+
+**Query Operations:**
+- `query` - Find keys matching filter (can return empty if not supported)
+- `get_batch` - Efficiently retrieve multiple keys
+
+**Metadata Operations:**
+- `config_schema` - Define configuration requirements
+- `cleanup_expired` - Remove expired entries (if TTL supported)
+
+### Redis Storage Example
+
+**Data Storage:**
+- Use Redis SET command for values
+- Apply TTL using Redis SETEX
+- Use key prefixes to namespace data
+
+**Index Management:**
+- Use Redis Sets for indexes
+- Index keys: `{prefix}:idx:{namespace}:{field}:{value}`
+- Add entries with SADD command
+- Query with SMEMBERS to retrieve matching keys
+
+**Query Implementation:**
+- `Equals` filter: Query specific index set
+- `All` filter: Use KEYS command to scan namespace
+- Build complex filters using set operations (SUNION, SDIFF)
+
+**TTL Handling:**
+- Redis has native TTL via SETEX
+- No manual cleanup needed
+- More efficient than file-based TTL
+
+### Implementation Guidelines
+
+**Error Handling:**
+- Map backend errors to appropriate `StorageError` types
+- Use `Backend` for I/O/system errors
+- Use `NotFound` for missing keys
+- Use `Expired` for TTL-expired data
+- Use `Serialization` for data format issues
+
+**Atomicity:**
+- Use transactions in database backends
+- Implement write-then-index ordering
+- Use atomic rename patterns for files
+
+**Concurrency:**
+- Support concurrent access safely
+- Multiple readers simultaneously
+- Proper write synchronization
+- Use underlying system's mechanisms
+
+**Performance:**
+- Efficient batch retrieval when supported
+- Connection pooling for network backends
+- Consider caching frequently accessed data
+
+**TTL Handling:**
+- Use native TTL when available (Redis SETEX)
+- Otherwise store expiration timestamps
+- Implement cleanup operations
+
+**Index Cleanup:**
+- Remove deleted entries from all indexes
+- Clean up empty index structures
+- Ensure atomic index updates
+
+---
+
+## Related Documentation
+
+- [solver-core](/docs/solvers/crates/solver-core) - Primary consumer of storage services
+- [solver-types](/docs/solvers/crates/solver-types) - StorageKey enum and type definitions
+- [solver-config](/docs/solvers/crates/solver-config) - Storage configuration management
+- [solver-discovery](/docs/solvers/crates/solver-discovery) - Stores discovered intents
+- [solver-settlement](/docs/solvers/crates/solver-settlement) - Persists settlement state
+

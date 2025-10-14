@@ -24,6 +24,7 @@ Business logic crates implement the core functionality of the solver.
 <Cards>
   <Card title="solver-account" href="/docs/solvers/crates/solver-account" description="Cryptographic account management and signing operations" />
   <Card title="solver-discovery" href="/docs/solvers/crates/solver-discovery" description="Intent discovery from on-chain events and HTTP APIs" />
+  <Card title="solver-order" href="/docs/solvers/crates/solver-order" description="Intent validation, execution strategy evaluation, and transaction generation" />
   <Card title="solver-pricing" href="/docs/solvers/crates/solver-pricing" description="Pricing strategies and calculations" />
 </Cards>
 
@@ -37,11 +38,20 @@ Infrastructure crates handle operational concerns like delivery, settlement, and
   <Card title="solver-storage" href="/docs/solvers/crates/solver-storage" description="Data persistence and storage backend abstractions" />
 </Cards>
 
+## Service & Demo Crates
+
+Service and demo crates provide production and development tools for running and testing the solver system.
+
+<Cards>
+  <Card title="solver-service" href="/docs/solvers/crates/solver-service" description="Main binary orchestrating all OIF solver components with dual entry points" />
+  <Card title="solver-demo" href="/docs/solvers/crates/solver-demo" description="Command-line testing tool for cross-chain intent execution" />
+</Cards>
+
 ## Architecture
 
 All crates follow a common documentation pattern:
 
-1. **Purpose & Overview** - What the crate does and why it exists
+1. **Overview** - What the crate does and why it exists
 2. **Core Features** - Main functionality and abstractions
 3. **Integration Architecture** - How it connects to other crates
 4. **Implementation Guide** - How to extend or customize

@@ -5,6 +5,7 @@
     "solver-types",
     "solver-config",
     "solver-account",
+    "solver-storage",
     "solver-pricing",
     "solver-order",
     "solver-discovery",

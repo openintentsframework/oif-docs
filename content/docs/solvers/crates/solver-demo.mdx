@@ -338,7 +338,7 @@ The binary entry point at `src/bin/solver-demo.rs` performs minimal work:
 
 Command handlers (in `src/bin/solver-demo.rs`) follow a consistent pattern:
 
-```
+```rust
 fn handle_{command}(cmd: CommandArgs) -> Result<()> {
     // 1. Load context (existing session or create new)
     let ctx = Context::load_existing().await?;

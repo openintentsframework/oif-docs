@@ -5,6 +5,8 @@
     "solver-config",
     "solver-account",
     "solver-discovery",
-    "solver-delivery"
+    "solver-delivery",
+    "solver-service",
+    "solver-pricing"
   ]
 }

@@ -1,0 +1,1142 @@
+---
+title: solver-types
+description: Foundational type system and shared data structures for OIF Solvers
+---
+
+# solver-types
+
+## Overview
+
+The `solver-types` crate is the foundational type system for the OIF (Open Intent Framework) Solver. It provides shared data structures, interfaces, and utilities used across all solver components for cross-chain intent execution.
+
+### Core Responsibilities
+
+This crate provides:
+
+- **Blockchain primitives**: Address, Signature, Transaction types
+- **Cross-chain standards**: EIP-7683 order types, ERC-7930 interoperable addresses
+- **Communication types**: Event system for inter-service messaging
+- **API types**: HTTP request/response structures for the solver API
+- **Configuration types**: Network configs, validation schemas, storage keys
+- **Economic types**: Cost breakdown, pricing interfaces
+- **Utility functions**: Address conversion, EIP-712 helpers, formatting
+
+### Module Structure
+
+```
+solver-types/src/
+├── account.rs           # Address, Signature, Transaction
+├── api.rs               # HTTP API request/response types
+├── auth.rs              # JWT authentication types
+├── costs.rs             # Cost breakdown structures
+├── delivery.rs          # Transaction delivery types
+├── discovery.rs         # Intent discovery types
+├── events.rs            # Event system for communication
+├── networks.rs          # Network and token configuration
+├── oracle.rs            # Oracle routing types
+├── order.rs             # Order processing types
+├── pricing.rs           # Pricing interface traits
+├── provider.rs          # RPC provider factories
+├── registry.rs          # Implementation registry trait
+├── secret_string.rs     # Secure string handling
+├── storage.rs           # Storage key enumeration
+├── validation.rs        # Configuration validation
+├── standards/
+│   ├── eip7683.rs      # EIP-7683 cross-chain orders
+│   ├── eip7930.rs      # ERC-7930 interoperable addresses
+│   └── mod.rs          # Standards exports
+└── utils/
+    ├── constants.rs     # Common constants
+    ├── conversion.rs    # Type conversions
+    ├── eip712.rs        # EIP-712 utilities
+    ├── formatting.rs    # String formatting
+    ├── helpers.rs       # Helper functions
+    └── mod.rs           # Utils exports
+```
+
+### Feature Flags
+
+```toml
+[features]
+default = ["oif-interfaces"]
+oif-interfaces = ["alloy-sol-types", "alloy-contract"]
+```
+
+The `oif-interfaces` feature enables Solidity contract bindings. When disabled, the crate provides only the data types without contract interaction capabilities.
+
+---
+
+## Core Type Definitions
+
+### 1. OrderParsable Trait - The Extensibility Foundation
+
+The `OrderParsable` trait is the cornerstone of the solver's ability to support multiple cross-chain standards without modifying core logic.
+
+```rust
+pub trait OrderParsable: Send + Sync {
+    fn parse_available_inputs(&self) -> Vec<OrderInput>;
+    fn parse_requested_outputs(&self) -> Vec<OrderOutput>;
+    fn parse_lock_type(&self) -> Option<String>;
+    fn input_oracle(&self) -> String;
+    fn origin_chain_id(&self) -> u64;
+    fn destination_chain_ids(&self) -> Vec<u64>;
+}
+```
+
+The solver core operates on `Order` structs that contain a `data: serde_json::Value` field with standard-specific information. The `OrderParsable` trait provides a **standard-agnostic interface** for extracting the data the solver needs:
+
+- **Inputs**: What assets the user is providing
+- **Outputs**: What assets the user expects to receive
+- **Oracle**: Which oracle validates the cross-chain transfer
+- **Chains**: Which chains are involved
+
+#### OrderParsable in Solver Core Processing
+
+In `solver-core`, when processing an order:
+
+```rust
+// Core engine doesn't know about EIP-7683 specifics
+let parsable = order.parse_order_data()?;  // Returns Box<dyn OrderParsable>
+
+// Works with any standard that implements the trait
+let inputs = parsable.parse_available_inputs();
+let outputs = parsable.parse_requested_outputs();
+let origin = parsable.origin_chain_id();
+let destinations = parsable.destination_chain_ids();
+
+// Use this data to make execution decisions
+let gas_cost = estimate_gas(origin, destinations);
+let profitability = calculate_profit(inputs, outputs, gas_cost);
+```
+
+#### Extending OrderParsable for New Standards
+
+To add a new cross-chain standard (e.g., EIP-XXXX):
+
+```rust
+// 1. Define your order data structure
+pub struct EipXxxxOrderData {
+    pub maker: String,
+    pub input_tokens: Vec<TokenAmount>,
+    pub output_tokens: Vec<TokenAmount>,
+    // ... standard-specific fields
+}
+
+// 2. Implement OrderParsable
+impl OrderParsable for EipXxxxOrderData {
+    fn parse_available_inputs(&self) -> Vec<OrderInput> {
+        self.input_tokens.iter().map(|token| {
+            OrderInput {
+                user: InteropAddress::from((self.chain_id, self.maker_address)),
+                asset: InteropAddress::from((self.chain_id, token.address)),
+                amount: token.amount,
+                lock: None,
+            }
+        }).collect()
+    }
+
+    // Implement other methods...
+}
+
+// 3. The solver core now works with your standard!
+```
+
+Currently, only `Eip7683OrderData` implements this trait (when `oif-interfaces` feature is enabled). The implementation handles the conversion from EIP-7683's `inputs: Vec<[U256; 2]>` format to the solver's `OrderInput` format with proper `InteropAddress` construction.
+
+### 2. Event System - Inter-Service Communication
+
+The event system enables **asynchronous, decoupled communication** between all solver services through a publish-subscribe pattern.
+
+#### SolverEvent Hierarchy
+
+```rust
+pub enum SolverEvent {
+    Discovery(DiscoveryEvent),
+    Order(OrderEvent),
+    Delivery(DeliveryEvent),
+    Settlement(SettlementEvent),
+}
+```
+
+Services communicate by publishing events to a centralized `EventBus` (defined in `solver-core`). Other services subscribe and react to relevant events:
+
+```rust
+// Discovery service publishes
+event_bus.publish(SolverEvent::Discovery(
+    DiscoveryEvent::IntentDiscovered { intent }
+));
+
+// Order service subscribes and reacts
+match event_rx.recv().await {
+    Ok(SolverEvent::Discovery(DiscoveryEvent::IntentDiscovered { intent })) => {
+        // Validate intent, create order
+        let order = validate_and_create_order(intent)?;
+
+        // Publish next event
+        event_bus.publish(SolverEvent::Order(
+            OrderEvent::Preparing { intent, order, params }
+        ));
+    }
+}
+```
+
+#### Key Event Types
+
+**OrderEvent** - Tracks order execution decisions:
+
+```rust
+pub enum OrderEvent {
+    Preparing { intent: Intent, order: Order, params: ExecutionParams },
+    Executing { order: Order, params: ExecutionParams },
+    Skipped { order_id: String, reason: String },
+    Deferred { order_id: String, retry_after: Duration },
+}
+```
+
+Used in `solver-core`'s engine to coordinate between order validation and transaction submission.
+
+**DeliveryEvent** - Transaction lifecycle:
+
+```rust
+pub enum DeliveryEvent {
+    TransactionPending { order_id, tx_hash, tx_type, tx_chain_id },
+    TransactionConfirmed { order_id, tx_hash, tx_type, receipt },
+    TransactionFailed { order_id, tx_hash, tx_type, error },
+}
+```
+
+The `solver-delivery` service publishes these. The `solver-core` engine subscribes and updates order state accordingly.
+
+**SettlementEvent** - Settlement coordination:
+
+```rust
+pub enum SettlementEvent {
+    FillDetected {
+		order_id: String,
+		tx_hash: TransactionHash,
+	},
+    /// Fill proof has been generated and is ready.
+	ProofReady { order_id: String, proof: FillProof },
+    PostFillReady { order_id },      // Trigger post-fill transaction
+    StartMonitoring { order_id, fill_tx_hash },  // Begin monitoring
+    ClaimReady { order_id },         // Ready to claim rewards
+    Completed { order_id },          // Settlement complete
+}
+```
+
+The `solver-settlement` service uses these to coordinate the post-fill monitoring and claiming phases.
+
+**TransactionType** - Identifies which phase of settlement:
+
+```rust
+pub enum TransactionType {
+    Prepare,   // openFor() on origin chain
+    Fill,      // fill() on destination chain
+    PostFill,  // Optional oracle interaction
+    PreClaim,  // Optional pre-claim setup
+    Claim,     // finalise() to claim rewards
+}
+```
+
+This enum is used throughout the solver to track which transaction is being processed, enabling proper state transitions in the order lifecycle.
+
+### 3. InteropAddress - Cross-Chain Addressing
+
+The `InteropAddress` type implements **ERC-7930 Interoperable Address Standard**, which encodes both the chain and address in a single value.
+
+```rust
+pub struct InteropAddress {
+    pub version: u8,                // Version (currently 1)
+    pub chain_type: [u8; 2],        // CAIP namespace
+    pub chain_reference: Vec<u8>,   // Chain ID (variable length)
+    pub address: Vec<u8>,           // Address bytes
+}
+```
+
+In cross-chain operations, you need to specify both "which chain" and "which address". Traditional addresses only encode the address part. ERC-7930 combines both into a single compact format.
+
+#### InteropAddress in API Requests and Responses
+
+In API requests and responses:
+
+```rust
+// User specifies input on Ethereum mainnet
+let input = OrderInput {
+    user: InteropAddress::new_ethereum(1, user_address),
+    asset: InteropAddress::new_ethereum(1, usdc_address),
+    amount: U256::from(1000000),  // 1 USDC
+    lock: None,
+};
+
+// User wants output on Polygon
+let output = OrderOutput {
+    receiver: InteropAddress::new_ethereum(137, receiver_address),
+    asset: InteropAddress::new_ethereum(137, usdc_polygon_address),
+    amount: U256::from(1000000),
+    calldata: None,
+};
+```
+
+In `solver-service`, when processing quotes, the service extracts chain IDs and addresses:
+
+```rust
+let origin_chain = input.asset.ethereum_chain_id()?;
+let dest_chain = output.asset.ethereum_chain_id()?;
+let token_address = input.asset.ethereum_address()?;
+```
+
+#### Serialization Format
+
+```
+// Ethereum mainnet USDC
+InteropAddress::new_ethereum(1, usdc_address)
+// Serializes to hex:
+"0x00010000010114A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+  └─┘└───┘└┘└┘└────────────────────────────────┘
+  Ver Type CL AL  Address (USDC)
+```
+
+The variable-length encoding optimizes for common chains (Mainnet=1 byte, Polygon=1 byte) while supporting any chain ID.
+
+### 4. StorageKey - Type-Safe Storage Namespaces
+
+Instead of using string literals for storage keys (error-prone), this enum provides compile-time safety.
+
+```rust
+pub enum StorageKey {
+    Orders,
+    Intents,
+    OrderByTxHash,
+    Quotes,
+    SettlementMessages,
+}
+```
+
+#### Type Safety Benefits
+
+Without this enum:
+
+```rust
+// Typo leads to runtime error
+storage.get("oder", id)?;  // Wrong key!
+```
+
+With this enum:
+
+```rust
+// Typo causes compile error
+storage.get(StorageKey::Oder, id)?;  // Compile error!
+storage.get(StorageKey::Orders, id)?;  // Correct
+```
+
+#### StorageKey in solver-storage
+
+The `solver-storage` crate uses these keys to namespace different data types:
+
+```rust
+// In solver-storage
+impl StorageInterface for MyStorage {
+    async fn get_bytes(&self, key: StorageKey, id: &str) -> Result<Option<Vec<u8>>> {
+        let namespace = key.as_str();  // "orders", "intents", etc.
+        let full_key = format!("{}:{}", namespace, id);
+        self.db.get(&full_key).await
+    }
+}
+```
+
+#### StorageKey Usage Across Services
+
+| Key | Used By | Purpose | TTL |
+|-----|---------|---------|-----|
+| `Orders` | solver-core, solver-order | Persistent order data | Permanent |
+| `Intents` | solver-discovery | Temporary intent cache | 24 hours |
+| `Quotes` | solver-service | Quote responses | 5 minutes |
+| `OrderByTxHash` | solver-delivery | Transaction → order mapping | 24 hours |
+| `SettlementMessages` | solver-settlement | Protocol-specific state | Varies |
+
+### 5. ConfigSchema Trait - Plugin Validation System
+
+This trait enables each service implementation to declare its own configuration requirements.
+
+```rust
+#[async_trait]
+pub trait ConfigSchema: Send + Sync {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError>;
+}
+```
+
+#### ConfigSchema in Service Interfaces
+
+Every service interface in the solver system requires implementations to provide a `config_schema()`:
+
+```rust
+// From solver-discovery
+pub trait DiscoveryInterface: Send + Sync {
+    fn config_schema(&self) -> Box<dyn ConfigSchema>;
+    // ... other methods
+}
+
+// From solver-pricing
+pub trait PricingInterface: Send + Sync {
+    fn config_schema(&self) -> Box<dyn ConfigSchema>;
+    // ... other methods
+}
+```
+
+#### Real Example from solver-discovery
+
+The `Eip7683OffchainDiscovery` service declares its config requirements:
+
+```rust
+pub struct Eip7683OffchainDiscoverySchema;
+
+impl ConfigSchema for Eip7683OffchainDiscoverySchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        Schema::new(
+            vec![
+                Field::new("api_host", FieldType::String),
+                Field::new("api_port", FieldType::Integer {
+                    min: Some(1),
+                    max: Some(65535)
+                }),
+                Field::new("network_ids", FieldType::Array(
+                    Box::new(FieldType::Integer { min: Some(1), max: None })
+                )),
+            ],
+            vec![]
+        ).validate(config)
+    }
+}
+```
+
+#### Configuration Validation Flow
+
+When loading configuration, `solver-config` validates each service's config against its schema:
+
+```rust
+// In solver-config
+let discovery_impl = create_discovery_implementation(name, impl_config)?;
+let schema = discovery_impl.config_schema();
+schema.validate(&impl_config)?;  // Validates before creation
+```
+
+#### Adding a New Service Implementation
+
+```rust
+// 1. Define your config structure (in your service crate)
+pub struct MyDiscoveryConfig {
+    pub api_url: String,
+    pub poll_interval: u64,
+}
+
+// 2. Define validation schema (in solver-types or your crate)
+pub struct MyDiscoverySchema;
+
+impl ConfigSchema for MyDiscoverySchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        Schema::new(
+            vec![
+                Field::new("api_url", FieldType::String)
+                    .with_validator(|v| {
+                        let url = v.as_str().unwrap();
+                        if url.starts_with("https://") {
+                            Ok(())
+                        } else {
+                            Err("API URL must use HTTPS".to_string())
+                        }
+                    }),
+                Field::new("poll_interval", FieldType::Integer {
+                    min: Some(1),
+                    max: Some(3600),
+                }),
+            ],
+            vec![]
+        ).validate(config)
+    }
+}
+
+// 3. Implement the service interface
+impl DiscoveryInterface for MyDiscovery {
+    fn config_schema(&self) -> Box<dyn ConfigSchema> {
+        Box::new(MyDiscoverySchema)
+    }
+    // ... other methods
+}
+
+// 4. Users can now configure it in TOML
+[discovery.implementations.my_discovery]
+api_url = "https://api.example.com"
+poll_interval = 60
+```
+
+### 6. Provider Factories - RPC Abstraction
+
+The provider factory functions abstract away the complexity of creating Alloy providers with proper retry logic and error handling.
+
+```rust
+pub fn create_http_provider(
+    network_id: u64,
+    networks: &NetworksConfig,
+) -> Result<DynProvider, ProviderError>;
+
+pub async fn create_ws_provider(
+    network_id: u64,
+    networks: &NetworksConfig,
+) -> Result<DynProvider, ProviderError>;
+```
+
+These functions:
+
+1. Look up network config by chain ID
+2. Extract RPC URL (HTTP or WebSocket)
+3. Configure retry layer with exponential backoff
+4. Handle rate limiting (10 requests/second)
+5. Retry execution reverts (error code 3)
+6. Return type-erased `DynProvider`
+
+#### Usage Throughout the Solver
+
+Throughout the solver, services need to interact with blockchains. Instead of each service implementing its own provider creation logic:
+
+**In solver-discovery** (monitoring on-chain events):
+
+```rust
+let provider = create_ws_provider(chain_id, &self.networks).await?;
+let filter = Filter::new().address(settler_address).event("Open");
+let logs = provider.subscribe_logs(&filter).await?;
+```
+
+**In solver-order** (calling contract functions):
+
+```rust
+let provider = create_http_provider(chain_id, &self.networks)?;
+let settler = IInputSettlerEscrow::new(settler_address, provider);
+let order_id = settler.orderIdentifier(order).call().await?;
+```
+
+**In solver-delivery** (submitting transactions):
+
+```rust
+let provider = create_http_provider(tx.chain_id, &self.networks)?;
+let pending_tx = provider.send_transaction(tx_request).await?;
+let receipt = pending_tx.get_receipt().await?;
+```
+
+#### Provider Retry Configuration
+
+The factories configure sophisticated retry logic:
+
+```rust
+// From provider.rs
+let retry_policy = RateLimitRetryPolicy::default().or(|error: &TransportError| {
+    match error {
+        TransportError::ErrorResp(payload) => {
+            // Retry execution reverts during transaction submission
+            payload.code == 3 && payload.message.contains("execution reverted")
+        },
+        _ => false,
+    }
+});
+
+let retry_layer = RetryBackoffLayer::new_with_policy(
+    3,     // max 3 retries
+    1500,  // 1.5s initial backoff
+    10,    // 10 compute units/second rate limit
+    retry_policy,
+);
+```
+
+This is crucial because blockchain RPCs can be unreliable. The centralized retry logic means all services benefit from the same robust error handling.
+
+### 7. LockType and Custody Mechanisms
+
+The `LockType` enum determines how user funds are secured during cross-chain execution.
+
+```rust
+pub enum LockType {
+    Permit2Escrow = 1,    // Permit2 signatures
+    Eip3009Escrow = 2,    // transferWithAuthorization
+    ResourceLock = 3,     // TheCompact protocol
+}
+```
+
+#### LockType Effects on Execution Flow
+
+The lock type affects:
+
+**1. Which settler contract is used** (`solver-order`):
+
+```rust
+let settler_address = if lock_type.is_compact() {
+    network.input_settler_compact_address
+} else {
+    network.input_settler_address
+};
+```
+
+**2. Which transactions are needed** (`solver-core`):
+
+```rust
+// ResourceLock orders skip prepare transaction
+let needs_prepare = !lock_type.is_compact() && source == "off-chain";
+```
+
+**3. How sponsor is extracted** (`solver-service`):
+
+```rust
+let sponsor = if order.requires_ecrecover() {
+    // Permit2/EIP3009: recover from signature
+    ecrecover_user_from_signature(&digest, &signature)?
+} else {
+    // ResourceLock: extract from order data
+    order.extract_sponsor(None)?
+};
+```
+
+**4. Gas cost estimation** (`solver-core`):
+
+```rust
+let flow_key = lock_type.as_str();  // "permit2_escrow", "resource_lock", etc.
+let gas_estimates = config.gas.flows.get(flow_key)?;
+```
+
+#### Flexible Parsing
+
+The type accepts multiple input formats for API flexibility:
+
+```rust
+// String name
+let lock_type: LockType = "permit2_escrow".parse()?;
+
+// Numeric string
+let lock_type: LockType = "1".parse()?;
+
+// Numeric value during deserialization
+// In JSON: { "lock_type": 1 } or { "lock_type": "permit2_escrow" }
+```
+
+### 8. ImplementationRegistry - Service Discovery
+
+This trait enables the plugin architecture used throughout the solver.
+
+```rust
+pub trait ImplementationRegistry {
+    const NAME: &'static str;
+    type Factory;
+    fn factory() -> Self::Factory;
+}
+```
+
+#### Service Registration Pattern
+
+Each service implementation declares its name and provides a factory function:
+
+```rust
+// In solver-discovery/src/implementations/offchain/_7683.rs
+pub struct Registry;
+
+impl ImplementationRegistry for Registry {
+    const NAME: &'static str = "offchain_eip7683";
+    type Factory = DiscoveryFactory;
+
+    fn factory() -> Self::Factory {
+        |config, networks, intent_sender| {
+            // Validate config
+            Eip7683OffchainDiscoverySchema.validate(config)?;
+
+            // Create implementation
+            Ok(Box::new(Eip7683OffchainDiscovery::new(
+                config,
+                networks,
+                intent_sender,
+            )?))
+        }
+    }
+}
+```
+
+#### Registry Usage in Solver Core
+
+When building the solver engine, it calls the factories:
+
+```rust
+// In solver-core
+let discovery_name = config.discovery.primary;
+let discovery_config = config.discovery.implementations.get(discovery_name)?;
+
+let discovery = match discovery_name {
+    offchain_eip7683::Registry::NAME =>
+        offchain_eip7683::Registry::factory()(discovery_config, networks, tx)?,
+    onchain_eip7683::Registry::NAME =>
+        onchain_eip7683::Registry::factory()(discovery_config, networks, tx)?,
+    _ => return Err("Unknown discovery implementation"),
+};
+```
+
+#### TOML Configuration
+
+```toml
+[discovery.implementations.offchain_eip7683]
+api_host = "127.0.0.1"
+api_port = 8081
+network_ids = [1, 137]
+```
+
+The `offchain_eip7683` key matches `Registry::NAME`, enabling dynamic service loading.
+
+### 9. EIP-7683 Types and Solidity Bindings
+
+#### Eip7683OrderData
+
+The main structure representing a cross-chain order:
+
+```rust
+pub struct Eip7683OrderData {
+    pub user: String,
+    pub nonce: U256,
+    pub origin_chain_id: U256,
+    pub expires: u32,
+    pub fill_deadline: u32,
+    pub input_oracle: String,
+    pub inputs: Vec<[U256; 2]>,        // [token_address, amount]
+    pub order_id: [u8; 32],
+    pub outputs: Vec<MandateOutput>,
+    pub raw_order_data: Option<String>,
+    pub signature: Option<String>,
+    pub lock_type: Option<LockType>,
+}
+```
+
+Used throughout the solver:
+
+- **solver-discovery**: Creates this from blockchain `Open` events or API submissions
+- **solver-order**: Validates this structure and generates transactions
+- **solver-settlement**: Extracts oracle and output chain information
+- **solver-service**: Converts this to/from API format
+
+#### Solidity Interface Bindings (oif-interfaces feature)
+
+When the feature is enabled, the crate provides type-safe Solidity bindings:
+
+```rust
+#[cfg(feature = "oif-interfaces")]
+pub mod interfaces {
+    sol! {
+        struct StandardOrder {
+            address user;
+            uint256 nonce;
+            uint256 originChainId;
+            uint32 expires;
+            uint32 fillDeadline;
+            address inputOracle;
+            uint256[2][] inputs;
+            SolMandateOutput[] outputs;
+        }
+
+        #[sol(rpc)]
+        interface IInputSettlerEscrow {
+            function openFor(StandardOrder calldata order, address sponsor, bytes calldata signature) external;
+            function finalise(StandardOrder calldata order, SolveParams[] calldata solveParams, bytes32 destination, bytes calldata call) external;
+            function orderIdentifier(StandardOrder calldata order) external view returns (bytes32);
+        }
+    }
+}
+```
+
+#### Solidity Bindings in Transaction Generation
+
+```rust
+use solver_types::standards::eip7683::interfaces::*;
+
+// Convert internal type to Solidity type
+let standard_order = StandardOrder::try_from(&eip7683_data)?;
+
+// Create contract instance
+let settler = IInputSettlerEscrow::new(settler_address, provider);
+
+// Generate openFor transaction
+let tx = settler.openFor(standard_order, sponsor, signature);
+let calldata = tx.calldata().to_vec();
+
+// Create Transaction struct
+Transaction {
+    to: Some(settler_address.into()),
+    data: calldata,
+    value: U256::ZERO,
+    chain_id,
+    // ... other fields
+}
+```
+
+#### Feature Flag Rationale
+
+Not all crates need contract interaction. For example, `solver-storage` just stores data. By making these bindings optional, compilation is faster and binaries are smaller for crates that don't need them.
+
+### 10. Validation Framework - Schema System
+
+The validation system provides declarative configuration validation.
+
+#### Schema and Field Types
+
+```rust
+pub struct Schema {
+    pub required: Vec<Field>,
+    pub optional: Vec<Field>,
+}
+
+pub struct Field {
+    pub name: String,
+    pub field_type: FieldType,
+    pub validator: Option<FieldValidator>,
+}
+
+pub enum FieldType {
+    String,
+    Integer { min: Option<i64>, max: Option<i64> },
+    Boolean,
+    Array(Box<FieldType>),
+    Table(Schema),  // Recursive for nested configs
+}
+```
+
+#### Real-World Usage
+
+In `solver-settlement`, the Direct settlement implementation defines its schema:
+
+```rust
+impl ConfigSchema for DirectSettlementSchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        Schema::new(
+            vec![
+                Field::new("order", FieldType::String),
+                Field::new("network_ids", FieldType::Array(
+                    Box::new(FieldType::Integer { min: Some(1), max: None })
+                )),
+                Field::new("dispute_period_seconds", FieldType::Integer {
+                    min: Some(0),
+                    max: Some(86400),
+                }),
+            ],
+            vec![
+                Field::new("oracle_selection_strategy", FieldType::String),
+            ],
+        ).validate(config)
+    }
+}
+```
+
+#### Nested Validation
+
+For complex configurations with nested tables:
+
+```rust
+let oracle_schema = Schema::new(
+    vec![Field::new("address", FieldType::String)],
+    vec![Field::new("priority", FieldType::Integer { min: Some(0), max: Some(100) })],
+);
+
+let main_schema = Schema::new(
+    vec![Field::new("oracles", FieldType::Table(oracle_schema))],
+    vec![],
+);
+
+// Validates:
+// [oracles]
+// address = "0x..."
+// priority = 10
+```
+
+#### Error Reporting
+
+Validation errors include the full path to the problematic field:
+
+```rust
+ValidationError::MissingField("settlement.implementations.direct.network_ids")
+ValidationError::TypeMismatch {
+    field: "api.port",
+    expected: "integer",
+    actual: "string"
+}
+ValidationError::InvalidValue {
+    field: "gas.flows.permit2_escrow.open",
+    message: "Value 200000 exceeds maximum 150000"
+}
+```
+
+---
+
+## Integration Architecture
+
+### Type Flow Through Processing Pipeline
+
+#### 1. Intent Discovery → Order Creation
+
+**In solver-discovery:**
+
+```rust
+// Blockchain event contains StandardOrder bytes
+let open_event = parse_open_event(log)?;
+
+// Create Intent with EIP-7683 data
+let intent = Intent {
+    id: hex::encode(order_id),
+    source: "on-chain".to_string(),
+    standard: "eip7683".to_string(),
+    metadata: IntentMetadata {
+        requires_auction: false,
+        exclusive_until: None,
+        discovered_at: current_timestamp(),
+    },
+    data: serde_json::to_value(&eip7683_data)?,
+    order_bytes: encoded_order,
+    quote_id: None,
+    lock_type: "permit2_escrow".to_string(),
+};
+
+// Publish event
+event_bus.publish(SolverEvent::Discovery(
+    DiscoveryEvent::IntentDiscovered { intent }
+));
+```
+
+**In solver-core:**
+
+```rust
+// Receive intent
+match event {
+    SolverEvent::Discovery(DiscoveryEvent::IntentDiscovered { intent }) => {
+        // Validate and convert to Order
+        let order = self.order_service.validate_and_create_order(intent)?;
+
+        // Store order
+        self.storage.set_typed(StorageKey::Orders, &order.id, &order).await?;
+
+        // Publish order event
+        event_bus.publish(SolverEvent::Order(
+            OrderEvent::Preparing { intent, order, params }
+        ));
+    }
+}
+```
+
+#### 2. Order Execution → Transaction Delivery
+
+**In solver-core:**
+
+```rust
+// Receive order event
+match event {
+    SolverEvent::Order(OrderEvent::Preparing { order, params, .. }) => {
+        // Generate prepare transaction
+        let tx = self.order_service.generate_prepare_transaction(&order)?;
+
+        // Submit via delivery service
+        let tx_hash = self.delivery_service.submit_transaction(tx).await?;
+
+        // Update order
+        order.status = OrderStatus::Pending;
+        order.prepare_tx_hash = Some(tx_hash.clone());
+        self.storage.set_typed(StorageKey::Orders, &order.id, &order).await?;
+
+        // Publish delivery event
+        event_bus.publish(SolverEvent::Delivery(
+            DeliveryEvent::TransactionPending {
+                order_id: order.id,
+                tx_hash,
+                tx_type: TransactionType::Prepare,
+                tx_chain_id: order.input_chains[0].chain_id,
+            }
+        ));
+    }
+}
+```
+
+#### 3. Transaction Confirmation → Settlement
+
+**In solver-delivery:**
+
+```rust
+// Monitor transaction
+let receipt = provider.get_transaction_receipt(tx_hash).await?;
+
+// Publish confirmation
+event_bus.publish(SolverEvent::Delivery(
+    DeliveryEvent::TransactionConfirmed {
+        order_id,
+        tx_hash,
+        tx_type,
+        receipt: TransactionReceipt::from(&receipt),
+    }
+));
+```
+
+**In solver-core:**
+
+```rust
+match event {
+    SolverEvent::Delivery(DeliveryEvent::TransactionConfirmed {
+        order_id, tx_type, receipt, ..
+    }) => {
+        match tx_type {
+            TransactionType::Fill => {
+                // Extract fill proof
+                let proof = FillProof {
+                    tx_hash: receipt.hash.clone(),
+                    block_number: receipt.block_number,
+                    attestation_data: None,
+                    filled_timestamp: receipt.block_timestamp.unwrap_or(current_timestamp()),
+                    oracle_address: oracle.to_string(),
+                };
+
+                // Update order
+                order.fill_proof = Some(proof);
+                order.status = OrderStatus::Executed;
+
+                // Trigger settlement monitoring
+                event_bus.publish(SolverEvent::Settlement(
+                    SettlementEvent::StartMonitoring {
+                        order_id,
+                        fill_tx_hash: receipt.hash,
+                    }
+                ));
+            }
+            _ => { /* handle other types */ }
+        }
+    }
+}
+```
+
+---
+
+## API Types
+
+### Request and Response Types
+
+The `api` module defines all HTTP request/response structures for the solver API.
+
+#### Quote Request
+
+```rust
+pub struct QuoteRequest {
+    pub inputs: Vec<OrderInput>,
+    pub outputs: Vec<OrderOutput>,
+    pub lock_type: Option<String>,
+    pub expires_in: Option<u64>,
+    pub metadata: Option<serde_json::Value>,
+}
+```
+
+#### Quote Response
+
+```rust
+pub struct QuoteResponse {
+    pub quote_id: String,
+    pub expires_at: u64,
+    pub estimated_cost: CostBreakdown,
+    pub order_bytes: String,
+    pub signature: Option<String>,
+}
+```
+
+#### Order Status Response
+
+```rust
+pub struct OrderStatusResponse {
+    pub order_id: String,
+    pub status: OrderStatus,
+    pub prepare_tx: Option<TransactionInfo>,
+    pub fill_tx: Option<TransactionInfo>,
+    pub claim_tx: Option<TransactionInfo>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+```
+
+These types are used by `solver-service` to expose a consistent REST API while the underlying types are used internally by the solver engine.
+
+---
+
+## Best Practices
+
+### Using Types Correctly
+
+#### 1. Always Use StorageKey Enum
+
+```rust
+// Good
+storage.get_typed(StorageKey::Orders, &order_id).await?;
+
+// Bad - runtime errors
+storage.get_typed("orders", &order_id).await?;
+```
+
+#### 2. Implement OrderParsable for New Standards
+
+When adding support for a new cross-chain standard, always implement the `OrderParsable` trait to ensure compatibility with the solver core.
+
+#### 3. Use Provider Factories
+
+Never create raw Alloy providers. Always use the factory functions to get proper retry logic:
+
+```rust
+// Good
+let provider = create_http_provider(chain_id, &networks)?;
+
+// Bad - no retry logic
+let provider = ProviderBuilder::new().on_http(rpc_url);
+```
+
+#### 4. Validate Configuration with Schemas
+
+Always define a `ConfigSchema` for your implementation to catch configuration errors early:
+
+```rust
+impl MyService {
+    pub fn new(config: &toml::Value) -> Result<Self> {
+        // Validate first
+        MyServiceSchema.validate(config)?;
+        
+        // Then extract values (safe after validation)
+        let field = config["field"].as_str().expect("validated");
+        // ...
+    }
+}
+```
+
+#### 5. Use InteropAddress for Cross-Chain References
+
+Always use `InteropAddress` when referring to addresses on specific chains:
+
+```rust
+// Good - explicit chain context
+let token = InteropAddress::new_ethereum(chain_id, token_address);
+
+// Bad - loses chain context
+let token = token_address;
+```
+
+### Performance Considerations
+
+- **InteropAddress serialization**: Cache serialized forms if used repeatedly
+- **Event publishing**: Events are async but not zero-cost; avoid publishing in tight loops
+- **Provider factories**: Reuse providers when making multiple calls to the same chain
+- **Type conversions**: Converting between internal and Solidity types has overhead; batch operations when possible
+
+### Common Pitfalls
+
+1. **Forgetting feature flags**: Some types are only available with `oif-interfaces` feature
+2. **Mismatching chain IDs**: Always validate that InteropAddress chain IDs match the actual chain being used
+3. **Ignoring validation errors**: ConfigSchema errors contain important context; don't swallow them
+4. **Manual event construction**: Use the provided event constructors to ensure all required fields are set
+5. **Hardcoding storage keys**: Always use the StorageKey enum
+
+---
+
+## Related Documentation
+
+- [solver-config](/docs/solvers/crates/solver-config) - Configuration management using these types
+- [solver-account](/docs/solvers/crates/solver-account) - Account management using Transaction and Signature types
+- [solver-core](/docs/solvers/crates/solver-core) - Core engine orchestrating the event system
+- [solver-order](/docs/solvers/crates/solver-order) - Order processing using EIP-7683 types
+- [solver-storage](/docs/solvers/crates/solver-storage) - Storage implementations using StorageKey
+

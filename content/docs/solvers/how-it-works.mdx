@@ -1,0 +1,239 @@
+# How It Works
+
+The OIF Solver operates through a multi-stage pipeline that handles the complete lifecycle of cross-chain intent execution. This guide explains each stage in detail.
+
+## The Intent Execution Pipeline
+
+The solver processes intents through six distinct stages:
+
+1. **Intent Discovery** - Monitor blockchain networks for new intents
+2. **Quote Generation** - Generate execution quotes via REST API (optional)
+3. **Intent Validation** - Parse and validate intent data
+4. **Profitability Analysis** - Calculate costs and verify profitability
+5. **Transaction Execution** - Submit and monitor transactions
+6. **Settlement Processing** - Complete cross-chain settlement
+
+## 1. Intent Discovery
+
+The solver monitors configured blockchain networks for new intent events. It can discover intents through multiple channels:
+
+- **On-chain monitoring**: Direct blockchain event monitoring for intents submitted to smart contracts
+- **Off-chain APIs**: REST API endpoints for intent submission and quote requests
+
+The discovery system runs continuously, watching for new `open` on-chain events across all configured chains.
+
+## 2. Quote Generation API
+
+Before executing intents, the solver can generate quotes for users through its REST API. This allows users to preview execution details and costs before committing on-chain.
+
+### Quote Request Flow
+
+1. User submits intent parameters via `POST /api/quotes` with:
+   - User address (ERC-7930 format: `chainId:address`)
+   - Intent details (inputs, outputs, swap type)
+   - Supported order types (e.g., `oif-escrow-v0`, `oif-resource-lock-v0`, `oif-3009-v0`)
+   - Optional preferences (price, speed, trust-minimization)
+2. Solver validates the request and checks capabilities
+3. Solver calculates costs and generates one or more quote options
+4. User receives quotes with complete EIP-712 order structures
+5. User signs the chosen order using EIP-712
+6. User submits the signed order to `/api/orders` with the quote ID
+
+### Quote Structure
+
+Each quote contains:
+
+- **Order**: Complete order structure with EIP-712 signature payload (type, domain, primaryType, message, types)
+- **Failure Handling**: The failure handling mode (refund-automatic, refund-claim, needs-new-signature)
+- **Partial Fill**: Boolean indicating whether partial fills are supported
+- **Valid Until**: Unix timestamp when the quote expires
+- **ETA**: Estimated time for complete cross-chain execution in seconds
+- **Quote ID**: Unique identifier for accepting the quote
+- **Provider**: Solver identifier (e.g., "oif-solver")
+- **Preview**: Informational preview of input/output amounts that must be verified against the order
+
+### Quote Signing (EIP-712)
+
+Before submitting quotes to the solver for execution, users must sign the order data:
+
+- **Signature Standard**: Uses EIP-712 typed structured data signing for human-readable and secure signatures
+- **User Responsibility**: Always carefully review what you are signing - verify the token amounts, addresses, chains, and all order parameters
+- **Authorization**: The signature authorizes the solver to execute the cross-chain intent on your behalf
+- **Security**: Only sign quotes from trusted sources and verify all details before signing
+
+### Quote Validation
+
+**IMPORTANT**: The `preview` field in quotes is for informational purposes only. Users and integrators **must** validate that the preview data matches the actual EIP-712 order structure:
+
+- **Verify Inputs**: Check that preview input amounts, tokens, and users match the signed EIP-712 message
+- **Verify Outputs**: Confirm that preview output amounts, tokens, and receivers align with the order outputs
+- **Cross-Reference**: Always validate preview against `order.payload.message` before signing
+- **Security Note**: Malicious solvers could provide mismatched preview data - the EIP-712 signature is what you're actually authorizing
+
+## 3. Intent Validation
+
+Once an intent is discovered (either from on-chain events or quote API), the solver validates it:
+
+1. **Parse Intent Data**: Decode the intent according to the specified protocol (EIP-7683, etc.)
+2. **Validate Structure**: Ensure all required fields are present and properly formatted
+3. **Check Liquidity**: Verify sufficient liquidity exists for execution
+4. **Assess Feasibility**: Confirm the intent can be fulfilled based on current market conditions
+5. **Convert to Order**: Transform the validated intent into an executable order
+
+Invalid intents are rejected and logged for monitoring purposes.
+
+## 4. Profitability Analysis
+
+Before accepting any intent, the solver performs a comprehensive profitability analysis to ensure execution will be financially viable.
+
+### Cost Context Calculation
+
+The solver builds a complete cost context that accounts for all operational expenses:
+
+- **Gas Costs**: Estimated fees for all transactions across all chains
+- **Price Data**: Real-time token prices for accurate USD conversions
+- **Network Conditions**: Current gas prices and congestion levels
+- **Swap Calculations**: Token amount calculations based on swap type
+
+### Swap Types and Amount Calculation
+
+The solver supports two types of swaps, each affecting how costs are embedded in quotes:
+
+#### ExactInput
+
+User specifies the exact input amount they want to provide:
+
+- Solver calculates the output amount after deducting all costs
+- Costs are subtracted from the user's output amount
+- Example: User provides 100 USDC, receives calculated ETH minus fees
+
+#### ExactOutput
+
+User specifies the exact output amount they want to receive:
+
+- Solver calculates the required input amount including all costs
+- Costs are added to the required input amount
+- Example: User wants 1 ETH, must provide calculated USDC plus fees
+
+### Cost Calculation
+
+The solver calculates all operational costs involved in executing the cross-chain intent:
+
+#### Gas Costs
+
+Estimates gas fees for all required transactions:
+
+- **Open transaction**: On the origin chain to initiate the intent
+- **Fill transaction**: On the destination chain to fulfill the user's request (future extension, not yet implemented)
+- **Claim transaction**: On the origin chain to complete settlement
+
+#### Additional Costs
+
+- **Gas Buffer**: Adds a configurable buffer (in basis points) to account for gas price volatility
+- **Base Price**: Covers any negative spread when output value exceeds input value
+
+### USD Pricing Conversion
+
+All token amounts are converted to USD using real-time pricing data to ensure accurate cross-token comparisons. Note that this only works for token pairs that have pricing information available from configured price sources:
+
+- **Price Sources**: Integration with price oracles and market data providers
+- **Cross-Chain Pricing**: Consistent pricing across different blockchain networks
+- **Token Normalization**: Proper handling of different decimal precisions
+- **Cost Embedding**: Costs are embedded into quote amounts based on swap type
+
+### Profit Margin Calculation
+
+The solver calculates profit margin by comparing the value received versus costs incurred, with all amounts normalized to USD for accurate assessment across different tokens.
+
+### Profitability Validation
+
+Each intent must meet the configured minimum profitability threshold (`min_profitability_pct`) before execution:
+
+- **Threshold Check**: The calculated profit margin must exceed the minimum required percentage
+- **Automatic Rejection**: Intents failing profitability validation are automatically skipped
+- **Configurable Minimum**: Operators can set their desired minimum profit margin (e.g., 1.0% in demo configurations)
+
+This ensures the solver only executes intents that provide adequate compensation for the operational costs and risks involved.
+
+## 5. Transaction Execution
+
+Once profitability is confirmed, the solver handles the complete transaction lifecycle:
+
+### Transaction Generation
+
+- Generate the necessary blockchain transactions (fill, post-fill, etc.)
+- Set appropriate gas parameters based on network conditions
+- Sign transactions using the configured Solver wallet/signer
+
+### Transaction Submission
+
+- Submit transactions to the appropriate blockchain networks
+- Monitor mempool for transaction status
+
+### Transaction Monitoring
+
+- Track transaction confirmation across multiple blocks
+- Handle transaction failures and retries with exponential backoff
+- Update internal state based on transaction outcomes
+
+### Error Recovery
+
+- On startup, the solver detects previously failed transactions and retries them automatically
+
+## 6. Settlement Processing
+
+After successful execution on the destination chain, the solver completes the cross-chain settlement:
+
+### Fill Validation
+
+- Monitor for fill transaction confirmation
+- Extract execution proofs from transaction receipts
+- Store proof data for claim submission
+
+### Claim Submission
+
+When settlement conditions are met:
+
+- Generate claim transaction with execution proofs
+- Submit claim to origin chain settlement contract
+- Monitor claim transaction confirmation
+- Verify funds are successfully claimed
+
+### Settlement Completion
+
+- Update intent status to completed
+- Release any locked resources
+
+## Authorization Mechanisms
+
+The solver supports multiple authorization mechanisms for different settlement patterns:
+
+### Permit2
+
+Token approval mechanism used for escrow-based settlement patterns:
+
+- Enables gasless token approvals through signature-based permissions
+- Users sign approval messages instead of on-chain transactions
+- Reduces gas costs and improves user experience
+
+### TheCompact
+
+Resource lock mechanism for compact settlement:
+
+- Allows users to allocate tokens for specific purposes without transferring custody
+- Supports more complex settlement patterns
+- Enables capital-efficient cross-chain operations
+
+### EIP-3009
+
+Transfer authorization standard for gasless transfers:
+
+- Enables transfers via signed messages
+- Reduces user transaction costs
+- Compatible with USDC and other major tokens
+
+## Next Steps
+
+- **[Architecture Overview](architecture.md)**: Deep dive into the solver's technical architecture
+- **[Configuration Guide](configuration.md)**: Configure profitability thresholds, execution strategies, and more
+- **[API Reference](api.md)**: Complete API documentation for the quote system

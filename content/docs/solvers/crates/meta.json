@@ -1,6 +1,7 @@
 {
   "title": "Crates",
   "pages": [
+    "solver-core",
     "solver-types",
     "solver-config",
     "solver-account",

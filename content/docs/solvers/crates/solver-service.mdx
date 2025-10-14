@@ -1,0 +1,784 @@
+---
+title: solver-service
+description: Main binary orchestrating all OIF solver components with dual entry points for intent processing
+---
+
+## Overview
+
+The `solver-service` crate is the primary binary that brings together all OIF solver components into a complete, production-ready application. It serves as the main entry point for the OIF Solver system with **dual entry points** for intent processing:
+
+1. **HTTP API**: Accepts off-chain intent submissions via REST endpoints for quote generation and order submission
+2. **Discovery Services**: Integrates with pluggable discovery implementations that can monitor intent sources via blockchain events
+
+The service operates in two modes:
+
+- **Solver-Only Mode**: Runs only the core solver engine, processing intents from on-chain discovery sources
+- **Concurrent Mode**: Runs both the solver engine and HTTP API server simultaneously using `tokio::select!` for concurrent task management
+
+At its core, `solver-service` orchestrates the continuous discovery, validation, execution, and settlement of cross-chain orders through an **event-driven architecture**. It wires up all modular components (account, delivery, discovery, order, settlement, pricing, storage) and coordinates their communication via a centralized EventBus.
+
+## System Architecture
+
+### Event-Driven Communication
+
+The solver-service coordinates all components through a **centralized EventBus** (implemented in `solver-core`) that enables asynchronous, decoupled communication. The EventBus uses tokio's broadcast channels to allow multiple services to subscribe to and publish events:
+
+**SolverEvent Types:**
+
+- **Discovery events**: `IntentDiscovered`, `IntentValidated`, `IntentRejected`
+- **Order events**: `Preparing`, `Executing`, `Skipped`, `Deferred`
+- **Delivery events**: `TransactionPending`, `TransactionConfirmed`, `TransactionFailed`
+- **Settlement events**: Settlement verification and claim processing updates
+
+Components subscribe to relevant events and emit new events as they process orders, creating a reactive pipeline from discovery through finalization.
+
+### Dual Entry Points
+
+**1. HTTP API (Off-Chain Orders)**
+
+The REST API allows clients to request quotes and submit signed orders:
+
+```
+POST /api/quotes     → Generate quotes for cross-chain swaps
+POST /api/orders     → Submit signed orders (with optional quote acceptance)
+GET  /api/orders/{id} → Track order status
+GET  /api/tokens     → Query supported tokens and capabilities
+```
+
+Orders submitted via API are validated, stored, and optionally forwarded to a discovery service for processing by the solver engine.
+
+**2. Discovery Services (Multiple Intent Sources)**
+
+The solver integrates with pluggable discovery service implementations through its factory system. When configured with on-chain discovery implementations, the system can process orders originating from blockchain events. Discovery services emit `IntentDiscovered` events to the EventBus, feeding orders into the same processing pipeline as API-submitted orders.
+
+### Operating Modes
+
+**Solver-Only Mode**
+
+Runs only the core solver engine:
+
+```rust
+solver.run().await?;
+```
+
+Processes orders from configured discovery service implementations. No HTTP API is exposed.
+
+**Concurrent Mode**
+
+Runs both solver engine and API server simultaneously:
+
+```rust
+tokio::select! {
+    result = solver.run() => { /* solver finished */ }
+    result = start_server(...) => { /* API server finished */ }
+}
+```
+
+Both entry points feed into the same solver engine, which processes all orders through the event-driven pipeline.
+
+### Architecture Philosophy
+
+The service follows a **factory pattern** for component instantiation, allowing operators to configure which implementations to use for each subsystem through TOML configuration. This makes it possible to:
+
+- Swap storage backends (file-based, in-memory) without code changes
+- Configure account management for local wallet operations
+
+### Key Responsibilities
+
+**Runtime Management**
+
+- Parse command-line arguments and load configuration
+- Initialize logging infrastructure with configurable levels
+- Build the solver engine with all required components via factory registry
+- Manage operating mode selection (solver-only vs concurrent)
+- Run solver loop and/or API server using `tokio::select!`
+
+**API Layer**
+
+- Quote generation for cross-chain swaps
+- Order validation and submission (with optional forwarding to discovery service)
+- Order status tracking
+- Token information and capabilities
+- Optional JWT authentication for protected endpoints
+
+**Event Bus Orchestration**
+
+- Initialize centralized EventBus for component communication
+- Coordinate event subscriptions across all services
+- Enable reactive processing pipeline through event emissions
+
+**Component Integration**
+
+- Connect account service for wallet management
+- Wire up delivery service for transaction execution
+- Integrate discovery service for order discovery (both on-chain and off-chain)
+- Link settlement service for verification and claiming
+- Connect pricing service for cost calculation
+- Set up storage for order and quote persistence
+
+### File Structure
+
+```
+solver-service/
+├── src/
+│   ├── main.rs                    # Binary entry point
+│   ├── server.rs                  # HTTP server setup
+│   ├── factory_registry.rs        # Component factory system
+│   ├── signature_validator.rs     # EIP-712 validation
+│   ├── apis/
+│   │   ├── mod.rs
+│   │   ├── auth.rs               # Authentication endpoints
+│   │   ├── order.rs              # Order retrieval
+│   │   ├── tokens.rs             # Token information
+│   │   └── quote/
+│   │       ├── mod.rs            # Quote orchestration
+│   │       ├── validation.rs     # Request validation
+│   │       ├── custody.rs        # Custody decisions
+│   │       ├── generation.rs     # Quote creation
+│   │       ├── registry.rs       # Protocol registry
+│   │       └── signing/          # Signature payloads
+│   ├── auth/
+│   │   ├── mod.rs               # JWT service
+│   │   └── middleware.rs        # Auth middleware
+│   └── eip712/                  # EIP-712 utilities
+└── Cargo.toml
+```
+
+---
+
+## Core Abstractions and Traits
+
+### Factory Registry System
+
+The factory registry is the backbone of the service's plugin architecture. It provides a centralized place to register and instantiate different implementations of each solver component.
+
+**Key Types:**
+
+```rust
+// Type alias for each component's factory function
+pub type StorageFactory = fn(&toml::Value)
+    -> Result<Box<dyn StorageInterface>, StorageError>;
+
+pub type DeliveryFactory = fn(
+    &toml::Value,
+    &NetworksConfig,
+    &SecretString,
+    &HashMap<u64, SecretString>
+) -> Result<Box<dyn DeliveryInterface>, DeliveryError>;
+
+// The global registry
+pub struct FactoryRegistry {
+    pub storage: HashMap<String, StorageFactory>,
+    pub account: HashMap<String, AccountFactory>,
+    pub delivery: HashMap<String, DeliveryFactory>,
+    pub discovery: HashMap<String, DiscoveryFactory>,
+    pub order: HashMap<String, OrderFactory>,
+    pub pricing: HashMap<String, PricingFactory>,
+    pub settlement: HashMap<String, SettlementFactory>,
+    pub strategy: HashMap<String, StrategyFactory>,
+}
+```
+
+### AppState - Shared Application State
+
+Every API handler receives a reference to `AppState`, which provides access to all services:
+
+```rust
+pub struct AppState {
+    pub solver: Arc<SolverEngine>,
+    pub config: Config,
+    pub http_client: reqwest::Client,
+    pub discovery_url: Option<String>,
+    pub jwt_service: Option<Arc<JwtService>>,
+    pub signature_validation: Arc<SignatureValidationService>,
+}
+```
+
+**Key Fields:**
+
+- `solver`: The main solver engine with all subsystems
+- `config`: Complete configuration for network addresses, settlers, etc.
+- `http_client`: Pooled HTTP client for forwarding to discovery services
+- `discovery_url`: Pre-computed URL for order forwarding
+- `jwt_service`: Optional authentication service
+- `signature_validation`: Handles EIP-712 signature verification
+
+**Lifecycle:**
+
+Created once during server startup, then cloned cheaply for each request using `Arc` pointers.
+
+### Quote Processing Abstractions
+
+### QuoteValidator
+
+Stateless validator with static methods for request validation:
+
+```rust
+pub struct QuoteValidator;
+
+impl QuoteValidator {
+    // Main validation entry point
+    pub fn validate_quote_request(
+        request: &GetQuoteRequest,
+        solver: &SolverEngine,
+    ) -> Result<ValidatedQuoteContext, QuoteError>
+
+    // Validates network support
+    pub fn validate_supported_networks(...)
+
+    // Validates and collects assets with cost adjustments
+    pub fn validate_and_collect_inputs_with_costs(...)
+    pub fn validate_and_collect_outputs_with_costs(...)
+
+    // Ensures solver has sufficient balances
+    pub async fn ensure_destination_balances_with_costs(...)
+}
+```
+
+**Key Concepts:**
+
+- **ValidatedQuoteContext**: Contains known vs. constraint amounts based on swap type
+- **SupportedAsset**: Validated asset with confirmed token support
+- **Cost-adjusted amounts**: Uses pre-calculated swap amounts from cost context
+
+### CustodyStrategy
+
+Determines how tokens should be secured during transfers:
+
+```rust
+pub struct CustodyStrategy {
+    delivery_service: Arc<DeliveryService>,
+}
+
+pub enum CustodyDecision {
+    ResourceLock { lock: AssetLockReference },
+    Escrow { lock_type: LockType },
+}
+```
+
+**Decision Process:**
+
+1. **Explicit Lock Check**: If the user provided a pre-authorized resource lock (TheCompact), use it directly
+2. **Token Capability Analysis**: Query the token's supported protocols (EIP-3009 support, Permit2 availability)
+3. **User Preference Evaluation**: If `originSubmission.schemes` specifies a preferred auth scheme, validate and use it
+4. **Automatic Fallback**: When no preference is given, automatically select the optimal mechanism (prefer EIP-3009 for lower gas costs, then Permit2 for universal compatibility)
+
+### QuoteGenerator
+
+Orchestrates quote creation with all required components:
+
+```rust
+pub struct QuoteGenerator {
+    custody_strategy: CustodyStrategy,
+    settlement_service: Arc<SettlementService>,
+    delivery_service: Arc<DeliveryService>,
+}
+```
+
+**Responsibilities:**
+
+- Generate quotes for each available input
+- Create appropriate order types (ResourceLock, Permit2, EIP-3009)
+- Build EIP-712 signature payloads
+- Calculate ETAs and expiry times
+- Sort quotes by user preference
+
+### Order Processing Abstractions
+
+### SignatureValidationService
+
+Pluggable architecture for validating different order standards:
+
+```rust
+#[async_trait]
+pub trait OrderSignatureValidator: Send + Sync {
+    fn requires_signature_validation(&self, lock_type: &LockType) -> bool;
+
+    async fn validate_signature(
+        &self,
+        intent: &PostOrderRequest,
+        networks_config: &NetworksConfig,
+        delivery_service: &Arc<DeliveryService>,
+    ) -> Result<(), APIError>;
+}
+```
+
+**Current Implementations:**
+
+- `Eip7683SignatureValidator`: Validates ResourceLock orders using TheCompact
+
+**Validation Steps:**
+
+1. Convert `OifOrder` to `StandardOrder`
+2. Get domain separator from TheCompact contract
+3. Compute message hash from order bytes
+4. Verify EIP-712 signature matches expected signer
+
+### Authentication Abstractions
+
+### JwtService
+
+Handles token generation and validation:
+
+```rust
+pub struct JwtService {
+    config: AuthConfig,
+    encoding_key: EncodingKey,
+    decoding_key: DecodingKey,
+    validation: Validation,
+}
+```
+
+**Key Methods:**
+
+- `generate_access_token()`: Short-lived tokens for API access
+- `validate_token()`: Verifies token signature and expiry
+- `generate_refresh_token()`: Long-lived tokens for renewal
+- `refresh_access_token()`: Exchanges refresh token for new access token
+
+**Token Rotation:**
+
+Each refresh generates a new refresh token (rotation) while keeping old ones valid. This is stateless JWT-based rotation - no revocation list needed for basic use cases.
+
+### AuthScope
+
+Fine-grained permission system:
+
+```rust
+pub enum AuthScope {
+    CreateQuotes,
+    ReadOrders,
+    CreateOrders,
+    AdminAll,
+}
+```
+
+`AdminAll` grants all permissions. Regular scopes must be explicitly checked.
+
+## Integration Architecture
+
+### Service Dependencies
+
+```
+                        AppState
+                           |
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+    SolverEngine      JWT Service    Signature Validator
+        │
+        ├── Storage
+        ├── Account
+        ├── Delivery ──────┐
+        ├── Discovery      │
+        ├── Order          │ (shared)
+        ├── Settlement ────┤
+        ├── Pricing ───────┤
+        └── TokenManager ──┘
+```
+
+All services use `Arc<T>` for cheap cloning across async tasks. The SolverEngine contains references to all component services, which are accessible to both the solver loop and API handlers through the shared AppState.
+
+### Initialization Flow
+
+**1. Command-Line Parsing**
+
+```rust
+struct Args {
+    config: PathBuf,       // Config file path
+    log_level: String,     // Trace, debug, info, warn, error
+}
+```
+
+**2. Logging Setup**
+
+The service uses `tracing` with environment filter support. This allows per-module log levels:
+
+```bash
+RUST_LOG=solver_service=debug,solver_core=info cargo run
+```
+
+**3. Configuration Loading**
+
+Loads TOML config with network addresses, settler contracts, oracle routes, and implementation selections.
+
+**4. Component Registration**
+
+Auto-registers all available implementations:
+
+```rust
+pub fn initialize_registry() -> &'static FactoryRegistry {
+    REGISTRY.get_or_init(|| {
+        let mut registry = FactoryRegistry::new();
+
+        // Each crate provides get_all_implementations()
+        for (name, factory) in solver_storage::get_all_implementations() {
+            registry.register_storage(name, factory);
+        }
+
+        for (name, factory) in solver_account::get_all_implementations() {
+            registry.register_account(name, factory);
+        }
+
+        // ... repeat for all component types
+
+        registry
+    })
+}
+```
+
+**5. Solver Engine Construction**
+
+```rust
+pub async fn build_solver_from_config(config: Config)
+    -> Result<SolverEngine, Box<dyn std::error::Error>>
+{
+    let registry = get_registry();
+    let builder = SolverBuilder::new(config.clone());
+
+    // Build factories for each component type
+    let storage_factories = build_factories!(
+        registry, config.storage.implementations, storage, "storage"
+    );
+
+    // ... build all other factories
+
+    let factories = SolverFactories {
+        storage_factories,
+        account_factories,
+        delivery_factories,
+        // ...
+    };
+
+    builder.build(factories).await
+}
+```
+
+This produces a fully initialized `SolverEngine` with:
+
+- All component services instantiated and connected
+- EventBus initialized and passed to all components
+- Event subscriptions established for reactive processing
+- Shared references (`Arc<T>`) for concurrent access
+
+**6. Operating Mode Selection & Runtime**
+
+The service determines which mode to run based on API configuration:
+
+```rust
+let api_enabled = config.api.as_ref().map_or(false, |api| api.enabled);
+
+if api_enabled {
+    // Concurrent Mode: Run both solver and API server
+    let api_solver = Arc::clone(&solver);
+
+    let solver_task = solver.run();
+    let api_task = server::start_server(api_config, api_solver);
+
+    tokio::select! {
+        result = solver_task => { /* solver finished */ }
+        result = api_task => { /* API server finished */ }
+    }
+} else {
+    // Solver-Only Mode: Run only solver engine
+    solver.run().await?;
+}
+```
+
+**Key aspects:**
+
+- Both modes use the same `SolverEngine` instance with EventBus
+- In concurrent mode, API handlers share the solver via `Arc<SolverEngine>`
+- The solver loop continuously processes events from the EventBus
+- Both tasks run until one completes or errors
+
+### API Server Setup
+
+**1. AppState Construction**
+
+```rust
+// Create pooled HTTP client
+let http_client = reqwest::Client::builder()
+    .pool_idle_timeout(Duration::from_secs(90))
+    .pool_max_idle_per_host(10)
+    .timeout(Duration::from_secs(30))
+    .build()?;
+
+// Extract discovery URL once at startup
+let discovery_url = api_config.implementations.discovery
+    .as_ref()
+    .and_then(|impl_name| {
+        solver.discovery().get_url(impl_name)
+            .map(|url| format!("http://{}/intent", url))
+    });
+
+// Initialize JWT service if auth enabled
+let jwt_service = match &api_config.auth {
+    Some(auth_config) if auth_config.enabled => {
+        Some(Arc::new(JwtService::new(auth_config.clone())?))
+    }
+    _ => None,
+};
+
+let app_state = AppState {
+    solver,
+    config,
+    http_client,
+    discovery_url,
+    jwt_service,
+    signature_validation: Arc::new(SignatureValidationService::new()),
+};
+```
+
+**2. Route Configuration**
+
+```rust
+// Public routes
+let mut api_routes = Router::new()
+    .route("/quotes", post(handle_quote))
+    .route("/tokens", get(handle_get_tokens))
+    .route("/tokens/{chain_id}", get(handle_get_tokens_for_chain))
+    .nest("/auth", auth_routes);
+
+// Protected routes with conditional auth middleware
+let mut order_routes = Router::new()
+    .route("/orders", post(handle_order))
+    .route("/orders/{id}", get(handle_get_order_by_id));
+
+if let Some(jwt) = &jwt_service {
+    // Apply auth middleware to POST /orders (CreateOrders scope)
+    let order_post_route = Router::new()
+        .route("/orders", post(handle_order))
+        .layer(middleware::from_fn_with_state(
+            AuthState {
+                jwt_service: jwt.clone(),
+                required_scope: AuthScope::CreateOrders,
+            },
+            auth_middleware,
+        ));
+
+    // Apply auth middleware to GET /orders/{id} (ReadOrders scope)
+    let order_get_route = Router::new()
+        .route("/orders/{id}", get(handle_get_order_by_id))
+        .layer(middleware::from_fn_with_state(
+            AuthState {
+                jwt_service: jwt.clone(),
+                required_scope: AuthScope::ReadOrders,
+            },
+            auth_middleware,
+        ));
+
+    order_routes = order_post_route.merge(order_get_route);
+}
+
+api_routes = api_routes.merge(order_routes);
+```
+
+**3. Middleware Layers**
+
+```rust
+let app = Router::new()
+    .nest("/api", api_routes)
+    .layer(ServiceBuilder::new()
+        .layer(CorsLayer::permissive())
+    )
+    .with_state(app_state);
+
+// Normalize paths (remove trailing slashes)
+let app = NormalizePath::trim_trailing_slash(app);
+```
+
+**4. Server Binding**
+
+```rust
+let bind_address = format!("{}:{}", api_config.host, api_config.port);
+let listener = TcpListener::bind(&bind_address).await?;
+
+tracing::info!("OIF Solver API server starting on {}", bind_address);
+
+let service = ServiceExt::into_make_service(app);
+axum::serve(listener, service).await?;
+```
+
+## Internal Flow Diagrams
+
+### Quote Request Processing
+
+**Validation Phase:**
+
+```
+GetQuoteRequest
+    │
+    ├─→ validate_intent_structure
+    │   ├── Check intentType == OifSwap
+    │   ├── Validate inputs/outputs non-empty
+    │   └── Validate interop addresses (ERC-7930)
+    │
+    ├─→ validate_supported_types
+    │   └── Check "oif-*-v*" pattern
+    │
+    ├─→ validate_swap_type_logic
+    │   ├── ExactInput: inputs have amounts, outputs optional
+    │   └── ExactOutput: outputs have amounts, inputs optional
+    │       └── Returns ValidatedQuoteContext
+    │
+    └─→ validate_capabilities
+        ├── Check supportedTypes compatibility
+        └── Validate auth schemes if specified
+```
+
+**Cost Calculation Phase:**
+
+```
+CostProfitService::calculate_cost_context
+    │
+    ├─→ For ExactInput:
+    │   ├── Use input amounts from request
+    │   ├── Calculate output amounts via pricing
+    │   └── Subtract costs from first output
+    │
+    └─→ For ExactOutput:
+        ├── Use output amounts from request
+        ├── Calculate input amounts via pricing
+        └── Add costs to first input
+```
+
+**Asset Collection Phase:**
+
+```
+validate_and_collect_inputs_with_costs
+    │
+    ├─→ For each input:
+    │   ├── Extract chain_id and address
+    │   ├── Check token support via TokenManager
+    │   ├── Get swap amount from CostContext
+    │   └── Create SupportedAsset
+    │
+    └─→ Return Vec<SupportedAsset>
+
+validate_and_collect_outputs_with_costs
+    │
+    └─→ Same process for outputs
+```
+
+**Balance Verification Phase:**
+
+```
+ensure_destination_balances_with_costs
+    │
+    ├─→ For each output (parallel):
+    │   ├── TokenManager::check_balance(chain_id, token)
+    │   ├── Adjust required amount based on swap type:
+    │   │   ├── ExactInput: subtract costs from first output
+    │   │   └── ExactOutput: use amounts as-is
+    │   └── Compare balance >= required_amount
+    │
+    └─→ Return Ok or InsufficientLiquidity error
+```
+
+**Quote Generation Phase:**
+
+```
+QuoteGenerator::generate_quotes_with_costs
+    │
+    ├─→ build_cost_adjusted_request
+    │   ├── For ExactInput: set output amounts (base - costs)
+    │   └── For ExactOutput: set input amounts (base + costs)
+    │
+    ├─→ validate_no_zero_amounts
+    │
+    ├─→ validate_swap_amount_constraints
+    │
+    └─→ For each input:
+        │
+        ├─→ CustodyStrategy::decide_custody
+        │   ├── Has explicit lock? → ResourceLock
+        │   ├── Check token capabilities
+        │   │   ├── supports_eip3009? → Eip3009Escrow
+        │   │   └── permit2_available? → Permit2Escrow
+        │   └── Respect user's originSubmission.schemes
+        │
+        ├─→ generate_resource_lock_order
+        │   ├── TheCompact → build_compact_message
+        │   │   ├── Get input oracle from settlement service
+        │   │   ├── Build commitments (lock tag + token + amount)
+        │   │   └── Build mandate (fillDeadline, inputOracle, outputs)
+        │   └── Create OifResourceLockV0 with EIP-712 payload
+        │
+        └─→ generate_escrow_order
+            ├── Get settlement for chain pair
+            ├── Permit2 → generate_permit2_order
+            │   ├── build_permit2_domain_object
+            │   ├── build_permit2_message_object
+            │   └── Create OifEscrowV0 with EIP-712 payload
+            └── EIP-3009 → generate_eip3009_order
+                ├── compute_eip3009_order_identifier (via contract call)
+                ├── build_eip3009_domain_object
+                └── Create Oif3009V0 with EIP-712 payload + metadata
+```
+
+### Order Submission Processing
+
+**Extraction Phase:**
+
+```
+extract_intent_request
+    │
+    ├─→ Has quoteId?
+    │   ├── YES: create_intent_from_quote
+    │   │   ├── Retrieve quote from storage
+    │   │   └── Convert Quote to PostOrderRequest
+    │   └── NO: create_intent_from_payload
+    │       └── Parse JSON as PostOrderRequest
+    │
+    └─→ Requires ecrecover?
+        ├── Extract sponsor from signature
+        └── Inject recovered user into Permit2 orders
+```
+
+**Validation Phase:**
+
+```
+validate_intent_request
+    │
+    ├─→ Convert to StandardOrder (EIP-7683)
+    │   └── OifOrder → StandardOrder
+    │
+    ├─→ Signature validation (if ResourceLock)
+    │   ├── SignatureValidationService::requires_signature_validation
+    │   └── SignatureValidationService::validate_signature
+    │       ├── Get domain separator from TheCompact
+    │       ├── Compute message hash
+    │       └── Verify EIP-712 signature
+    │
+    └─→ OrderService::validate_and_create_order
+        ├── Decode and validate order fields
+        ├── Extract nonce, expires, fillDeadline
+        ├── Validate oracle addresses
+        └── Create Order with status "Created"
+```
+
+**Forwarding Phase:**
+
+```
+forward_to_discovery_service
+    │
+    ├─→ Check discovery_url configured?
+    │
+    ├─→ POST to discovery service
+    │   └── Send PostOrderRequest as JSON
+    │
+    └─→ Parse response
+        ├── Success → PostOrderResponse with order_id
+        │          └── (Discovery service emits IntentDiscovered event to EventBus)
+        └── Error → PostOrderResponse with error status
+```
+
+**Event Flow:**
+
+Once forwarded to discovery, the order enters the event-driven pipeline:
+
+1. Discovery service emits `IntentDiscovered` event
+2. Order service validates and emits `IntentValidated` event (or `IntentRejected`)
+3. Order handlers emit `Preparing` or `Executing` events
+4. Delivery service emits `TransactionPending` / `TransactionConfirmed` events
+5. Settlement service monitors and emits settlement events

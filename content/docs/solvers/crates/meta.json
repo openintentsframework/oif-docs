@@ -1,10 +1,12 @@
 {
   "title": "Crates",
   "pages": [
-    "solver-account",
-    "solver-config",
-    "solver-service",
     "solver-types",
+    "solver-config",
+    "solver-account",
+    "solver-discovery",
+    "solver-delivery",
+    "solver-service",
     "solver-pricing"
   ]
 }

@@ -2,7 +2,9 @@
   "title": "Crates",
   "pages": [
     "solver-account",
-    "solver-service"
+    "solver-config",
+    "solver-service",
+    "solver-types",
+    "solver-pricing"
   ]
 }
-

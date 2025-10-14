@@ -1,0 +1,54 @@
+---
+title: Solver Crates
+description: Detailed documentation for each OIF Solver crate
+---
+
+# Solver Crates
+
+This section provides in-depth documentation for each crate in the OIF Solver system. Each crate is documented with its purpose, architecture, integration patterns, and implementation guides.
+
+## Foundation Crates
+
+<Cards>
+  <Card title="solver-types" href="/docs/solvers/crates/solver-types" description="Foundational type system and shared data structures" />
+  <Card title="solver-config" href="/docs/solvers/crates/solver-config" description="Configuration management and validation" />
+</Cards>
+
+## Business Logic Crates
+
+<Cards>
+  <Card title="solver-account" href="/docs/solvers/crates/solver-account" description="Cryptographic account management and signing operations" />
+  <Card title="solver-discovery" href="/docs/solvers/crates/solver-discovery" description="Intent discovery mechanisms" />
+  <Card title="solver-order" href="/docs/solvers/crates/solver-order" description="Order processing and validation" />
+  <Card title="solver-pricing" href="/docs/solvers/crates/solver-pricing" description="Pricing strategies and calculations" />
+</Cards>
+
+## Infrastructure Crates
+
+<Cards>
+  <Card title="solver-delivery" href="/docs/solvers/crates/solver-delivery" description="Transaction delivery mechanisms" />
+  <Card title="solver-settlement" href="/docs/solvers/crates/solver-settlement" description="Settlement coordination and monitoring" />
+  <Card title="solver-storage" href="/docs/solvers/crates/solver-storage" description="Data persistence and storage backends" />
+</Cards>
+
+## Service Crates
+
+<Cards>
+  <Card title="solver-core" href="/docs/solvers/crates/solver-core" description="Core solver engine and orchestration" />
+  <Card title="solver-service" href="/docs/solvers/crates/solver-service" description="HTTP API and service layer" />
+</Cards>
+
+## Architecture
+
+All crates follow a common pattern:
+
+1. **Purpose & Overview** - What the crate does and why it exists
+2. **Core Features** - Main functionality and abstractions
+3. **Integration Architecture** - How it connects to other crates
+4. **Implementation Guide** - How to extend or customize
+5. **Best Practices** - Common patterns and pitfalls
+
+## Getting Started
+
+Start with the foundation crates to understand the type system, then explore the business logic crates to see how different components work together.
+

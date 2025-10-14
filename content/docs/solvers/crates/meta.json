@@ -9,7 +9,6 @@
     "solver-discovery",
     "solver-delivery",
     "solver-service",
-    "solver-pricing",
     "solver-demo"
   ]
 }

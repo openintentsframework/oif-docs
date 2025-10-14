@@ -782,3 +782,18 @@ Once forwarded to discovery, the order enters the event-driven pipeline:
 3. Order handlers emit `Preparing` or `Executing` events
 4. Delivery service emits `TransactionPending` / `TransactionConfirmed` events
 5. Settlement service monitors and emits settlement events
+
+---
+
+## Related Documentation
+
+- [solver-core](/docs/solvers/crates/solver-core) - Core solver engine orchestrated by this service
+- [solver-types](/docs/solvers/crates/solver-types) - API types and event system used throughout
+- [solver-config](/docs/solvers/crates/solver-config) - Configuration management for all services
+- [solver-account](/docs/solvers/crates/solver-account) - Account service for wallet operations
+- [solver-discovery](/docs/solvers/crates/solver-discovery) - Discovery service for intent ingestion
+- [solver-order](/docs/solvers/crates/solver-order) - Order processing and validation
+- [solver-pricing](/docs/solvers/crates/solver-pricing) - Pricing service for quote generation
+- [solver-delivery](/docs/solvers/crates/solver-delivery) - Transaction delivery service
+- [solver-settlement](/docs/solvers/crates/solver-settlement) - Settlement coordination service
+- [solver-storage](/docs/solvers/crates/solver-storage) - Storage service for data persistence

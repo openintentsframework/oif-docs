@@ -730,36 +730,6 @@ output = { 137 = ["0x..."] }
 137 = [1]
 ```
 
----
-
-## Best Practices
-
-### Oracle Selection Strategies
-
-Choose the appropriate strategy based on your requirements:
-
-**First Strategy:**
-- Always picks the first oracle in the list
-- Use when you have a primary oracle with backups
-- Predictable and simple
-
-**RoundRobin Strategy:**
-- Distributes orders evenly across oracles
-- Uses selection context modulo number of oracles
-- Provides load distribution
-
-**Random Strategy:**
-- Uses hash of selection context for pseudo-random selection
-- Unpredictable distribution while deterministic for same context
-- Good for avoiding oracle-specific issues
-
-```rust
-// Use order ID as consistent selection context
-let order_hash = hash_order_id(&order.id);
-let context = u64::from_be_bytes(&order_hash[0..8]);
-let oracle = self.select_oracle(&oracle_addresses, Some(context))?;
-```
-
 ### Error Handling
 
 **Be conservative in `can_claim`:**
@@ -849,24 +819,6 @@ Transaction {
     ..tx
 }
 ```
-
-### Performance Considerations
-
-- **Cache frequently accessed data** to reduce storage I/O
-- **Reuse providers** across operations on the same chain
-- **Make `can_claim` lightweight** since it's called frequently
-- **Avoid expensive operations** in hot paths
-- **Use parallel queries** when checking multiple chains
-
-### Common Pitfalls
-
-1. **Not being conservative in `can_claim`**: Always default to false on uncertainty
-2. **Incorrect payload encoding**: Must exactly match oracle expectations
-3. **Missing message tracking**: State lost on restart
-4. **Under-paying cross-chain gas**: Messages submitted but never relayed
-5. **Forgetting TTLs**: Storage fills with stale data
-6. **Not handling RPC failures**: Temporary issues cause claim failures
-7. **Incorrect oracle selection**: Different oracles selected for same order
 
 ---
 

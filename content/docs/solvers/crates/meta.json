@@ -5,10 +5,11 @@
     "solver-types",
     "solver-config",
     "solver-account",
+    "solver-pricing",
     "solver-order",
     "solver-discovery",
     "solver-delivery",
     "solver-service",
-    "solver-pricing"
+    "solver-demo"
   ]
 }

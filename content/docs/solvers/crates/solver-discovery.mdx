@@ -31,15 +31,15 @@ All implementations satisfy the `DiscoveryInterface` trait and send discovered i
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│              Discovery Layer                             │
-│  ┌──────────────┐            ┌──────────────┐          │
-│  │  On-Chain    │            │  Off-Chain   │          │
-│  │  (Events)    │            │  (HTTP API)  │          │
-│  └──────┬───────┘            └──────┬───────┘          │
+│              Discovery Layer                            │
+│  ┌──────────────┐            ┌──────────────┐           │
+│  │  On-Chain    │            │  Off-Chain   │           │
+│  │  (Events)    │            │  (HTTP API)  │           │
+│  └──────┬───────┘            └──────┬───────┘           │
 │         │                           │                   │
 │         └───────────┬───────────────┘                   │
-│                     │                                    │
-│                     ▼                                    │
+│                     │                                   │
+│                     ▼                                   │
 │          ┌─────────────────────┐                        │
 │          │  Intent Channel     │                        │
 │          │  (mpsc::unbounded)  │                        │
@@ -175,77 +175,6 @@ async fn monitor_chain_polling(
 
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
-}
-```
-
-#### Event Parsing
-
-StandardOrder from Solidity:
-
-```rust
-sol! {
-    struct StandardOrder {
-        address user;
-        uint256 nonce;
-        uint256 originChainId;
-        uint32 expires;
-        uint32 fillDeadline;
-        address inputOracle;
-        uint256[2][] inputs;      // [token, amount] pairs
-        SolMandateOutput[] outputs;
-    }
-
-    event Open(bytes32 indexed orderId, StandardOrder order);
-}
-```
-
-Parse log into Intent:
-
-```rust
-fn parse_open_event(log: &Log) -> Result<Intent, DiscoveryError> {
-    // Decode event using Alloy
-    let open_event = Open::decode_log(&log)?;
-
-    // Extract data
-    let order_id = open_event.orderId;
-    let order = open_event.order;
-
-    // Validate
-    if order.outputs.is_empty() {
-        return Err(ValidationError("Order must have at least one output"));
-    }
-
-    // Convert to internal format
-    let order_data = Eip7683OrderData {
-        user: hex::encode(order.user),
-        nonce: order.nonce,
-        origin_chain_id: order.originChainId,
-        expires: order.expires,
-        fill_deadline: order.fillDeadline,
-        inputs: order.inputs,
-        outputs: order.outputs.iter().map(convert_output).collect(),
-        order_id: order_id.0,
-        raw_order_data: Some(hex::encode(order.abi_encode())),
-        lock_type: Some(LockType::Permit2Escrow),
-        signature: None,  // On-chain orders don't need signatures
-        sponsor: None,
-    };
-
-    // Create Intent
-    Ok(Intent {
-        id: hex::encode(order_id),
-        source: "on-chain".to_string(),
-        standard: "eip7683".to_string(),
-        metadata: IntentMetadata {
-            requires_auction: false,
-            discovered_at: current_timestamp(),
-            exclusive_until: None,
-        },
-        data: serde_json::to_value(order_data)?,
-        order_bytes: order.abi_encode(),
-        quote_id: None,
-        lock_type: LockType::Permit2Escrow.to_string(),
-    })
 }
 ```
 
@@ -692,12 +621,6 @@ pub struct Intent {
     pub order_bytes: Bytes,              // Raw ABI-encoded order bytes
     pub quote_id: Option<String>,        // Optional quote ID for auction-based orders
     pub lock_type: String,               // Lock type ("permit2-escrow", "resource-lock", etc.)
-}
-
-pub struct IntentMetadata {
-    pub requires_auction: bool,          // Whether order requires auction process
-    pub exclusive_until: Option<u64>,    // Exclusive solver until this timestamp
-    pub discovered_at: u64,              // Unix timestamp when discovered
 }
 ```
 

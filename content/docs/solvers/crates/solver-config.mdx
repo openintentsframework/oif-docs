@@ -1,0 +1,1358 @@
+---
+title: solver-config
+description: Configuration management system for OIF Solvers with multi-file loading and validation
+---
+
+# solver-config
+
+## Overview
+
+The `solver-config` crate provides type-safe configuration management for the OIF Solver system. It handles loading, parsing, validating, and managing all solver configurations from TOML files with support for multi-file includes, environment variable resolution, and comprehensive validation.
+
+### Core Responsibilities
+
+- **Multi-file configuration**: Include directives with circular dependency detection
+- **Environment variable resolution**: Support for `${VAR:-default}` syntax with defaults
+- **Comprehensive validation**: Fail-fast error handling with detailed messages
+- **Settlement coverage validation**: Ensures all order types have appropriate settlement implementations
+- **Type safety**: Strong typing for all configuration sections
+- **Builder pattern**: Programmatic configuration for testing scenarios
+
+### Core Components
+
+```rust
+pub struct Config                    // Main configuration structure
+pub struct ConfigLoader              // Multi-file loading with include resolution
+pub struct ConfigBuilder             // Programmatic configuration for tests
+pub fn resolve_env_vars()            // Environment variable substitution
+```
+
+### Integration Context
+
+The solver-config crate is used by all solver components:
+
+```
+solver-service   → Loads config on startup, initializes all services
+solver-core      → Accesses solver settings, network configs, gas limits
+solver-discovery → Reads network IDs and implementation configs
+solver-delivery  → Gets confirmation thresholds and network configs
+solver-account   → Accesses account implementation configs
+```
+
+---
+
+## Configuration Schema
+
+### Main Structure
+
+The top-level configuration aggregates all subsystem configs:
+
+```rust
+pub struct Config {
+    pub solver: SolverConfig,           // Solver identity & thresholds
+    pub networks: NetworksConfig,        // Blockchain networks & tokens
+    pub storage: StorageConfig,          // Persistence backend
+    pub delivery: DeliveryConfig,        // Transaction delivery
+    pub account: AccountConfig,          // Key management
+    pub discovery: DiscoveryConfig,      // Intent sources
+    pub order: OrderConfig,              // Order processing
+    pub settlement: SettlementConfig,    // Settlement mechanisms
+    pub pricing: Option<PricingConfig>,  // Asset pricing (optional)
+    pub api: Option<ApiConfig>,          // HTTP server (optional)
+    pub gas: Option<GasConfig>,          // Gas overrides (optional)
+}
+```
+
+### Core Sections
+
+#### SolverConfig - Identity and Thresholds
+
+```toml
+[solver]
+id = "my-solver"
+min_profitability_pct = 5.0
+monitoring_timeout_seconds = 3600
+```
+
+**Fields:**
+
+- `id` (String): Unique solver identifier used in logs and metrics
+- `min_profitability_pct` (Decimal): Minimum profit threshold percentage before accepting orders
+- `monitoring_timeout_seconds` (u64): Maximum time to monitor transactions (range: 30-28800 seconds)
+
+**Validation Rules:**
+
+- Solver ID must be non-empty
+- Monitoring timeout must be between 30 seconds and 8 hours
+
+#### NetworksConfig - Blockchain Networks
+
+```toml
+[networks.1]
+input_settler_address = "0x..."
+output_settler_address = "0x..."
+input_settler_compact_address = "0x..."  # Optional: for ResourceLock orders
+
+[[networks.1.rpc_urls]]
+http = "http://localhost:8545"
+ws = "ws://localhost:8545"
+
+[[networks.1.tokens]]
+address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+symbol = "USDC"
+decimals = 6
+
+[networks.137]
+# Polygon configuration...
+```
+
+**Structure:**
+
+```rust
+pub struct NetworksConfig(pub HashMap<u64, NetworkConfig>);
+
+pub struct NetworkConfig {
+    pub input_settler_address: String,
+    pub output_settler_address: String,
+    pub input_settler_compact_address: Option<String>,
+    pub output_settler_compact_address: Option<String>,
+    pub rpc_urls: Vec<RpcUrl>,
+    pub tokens: Vec<TokenConfig>,
+}
+
+pub struct RpcUrl {
+    pub http: Option<String>,
+    pub ws: Option<String>,
+}
+
+pub struct TokenConfig {
+    pub address: String,
+    pub symbol: String,
+    pub decimals: u8,
+}
+```
+
+**Validation Rules:**
+
+- Minimum 2 networks required (for cross-chain operations)
+- Each network must have `input_settler_address` and `output_settler_address`
+- At least 1 RPC URL per network
+- At least 1 token per network
+- Token decimals must be valid (0-255)
+
+#### StorageConfig - Persistence Backend
+
+```toml
+[storage]
+primary = "memory"
+cleanup_interval_seconds = 3600
+
+[storage.implementations.memory]
+# Memory storage has no additional config
+
+[storage.implementations.file]
+storage_path = "./data"
+
+[storage.implementations.redis]
+url = "redis://localhost:6379"
+password = "${REDIS_PASSWORD}"
+```
+
+**Structure:**
+
+```rust
+pub struct StorageConfig {
+    pub primary: String,
+    pub cleanup_interval_seconds: u64,
+    pub implementations: HashMap<String, toml::Value>,
+}
+```
+
+**Pattern:** Declares a `primary` implementation name, then provides implementation-specific configs in the `implementations` map.
+
+**Validation Rules:**
+
+- Primary implementation must exist in implementations map
+- Cleanup interval: 1-86400 seconds (1 second to 24 hours)
+
+#### DeliveryConfig - Transaction Delivery
+
+```toml
+[delivery]
+min_confirmations = 3
+
+[delivery.implementations.evm_alloy]
+network_ids = [1, 137]
+```
+
+**Structure:**
+
+```rust
+pub struct DeliveryConfig {
+    pub min_confirmations: u64,
+    pub implementations: HashMap<String, toml::Value>,
+}
+```
+
+**Validation Rules:**
+
+- Min confirmations: 1-100
+
+#### AccountConfig - Key Management
+
+```toml
+[account]
+primary = "local"
+
+[account.implementations.local]
+private_key = "${SOLVER_PRIVATE_KEY}"
+
+[account.implementations.kms]
+key_id = "arn:aws:kms:..."
+region = "us-east-1"
+```
+
+**Structure:**
+
+```rust
+pub struct AccountConfig {
+    pub primary: String,
+    pub implementations: HashMap<String, toml::Value>,
+}
+```
+
+**Validation Rules:**
+
+- Primary implementation must exist in implementations map
+
+#### DiscoveryConfig - Intent Sources
+
+```toml
+[discovery]
+
+[discovery.implementations.onchain_eip7683]
+network_ids = [1, 137]
+polling_interval_secs = 0
+
+[discovery.implementations.offchain_eip7683]
+api_host = "127.0.0.1"
+api_port = 8081
+network_ids = [1, 137]
+```
+
+**Structure:**
+
+```rust
+pub struct DiscoveryConfig {
+    pub implementations: HashMap<String, toml::Value>,
+}
+```
+
+Note: Discovery doesn't have a `primary` field because multiple discovery implementations can run simultaneously.
+
+#### OrderConfig - Order Processing
+
+```toml
+[order]
+
+[order.implementations.eip7683]
+# EIP-7683 specific config
+
+[order.strategy]
+primary = "simple"
+
+[order.strategy.implementations.simple]
+max_gas_price_gwei = 100
+
+[order.strategy.implementations.advanced]
+max_slippage_pct = 1.0
+```
+
+**Structure:**
+
+```rust
+pub struct OrderConfig {
+    pub implementations: HashMap<String, toml::Value>,
+    pub strategy: OrderStrategyConfig,
+}
+
+pub struct OrderStrategyConfig {
+    pub primary: String,
+    pub implementations: HashMap<String, toml::Value>,
+}
+```
+
+**Validation Rules:**
+
+- Strategy primary implementation must exist in strategy implementations map
+
+#### SettlementConfig - Settlement Mechanisms
+
+```toml
+[settlement]
+settlement_poll_interval_seconds = 3
+
+[settlement.implementations.permit2]
+order = "eip7683"
+network_ids = [1, 137]
+
+[settlement.implementations.compact]
+order = "eip7683"
+network_ids = [1, 137]
+```
+
+**Structure:**
+
+```rust
+pub struct SettlementConfig {
+    pub settlement_poll_interval_seconds: u64,
+    pub implementations: HashMap<String, toml::Value>,
+}
+```
+
+**Critical Settlement Coverage Rules:**
+
+Each settlement implementation MUST declare:
+
+1. `order` field: Which order standard it supports (e.g., "eip7683")
+2. `network_ids` field: Which chains it operates on
+
+**Validation enforces:**
+
+- Every order implementation has at least one settlement covering all configured networks
+- No duplicate coverage: each (order type, network) pair has exactly one settlement
+- All settlement network IDs exist in networks config
+
+#### ApiConfig - HTTP Server (Optional)
+
+```toml
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 3000
+timeout_seconds = 30
+max_request_size = 1048576
+
+[api.implementations]
+discovery = "offchain_eip7683"
+
+[api.rate_limiting]
+requests_per_minute = 100
+burst_size = 20
+
+[api.cors]
+allowed_origins = ["*"]
+allowed_headers = ["Content-Type", "Authorization"]
+allowed_methods = ["GET", "POST"]
+
+[api.auth]
+enabled = true
+jwt_secret = "${JWT_SECRET}"
+
+[api.quote]
+validity_seconds = 20
+```
+
+**Structure:**
+
+```rust
+pub struct ApiConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub timeout_seconds: u64,
+    pub max_request_size: usize,
+    pub implementations: ApiImplementations,
+    pub rate_limiting: Option<RateLimitConfig>,
+    pub cors: Option<CorsConfig>,
+    pub auth: Option<AuthConfig>,
+    pub quote: Option<QuoteConfig>,
+}
+```
+
+**Validation Rules:**
+
+- If API is enabled and discovery implementation is specified, it must exist in discovery implementations
+
+#### GasConfig - Gas Overrides (Optional)
+
+```toml
+[gas]
+
+[gas.flows.permit2_escrow]
+open = 150000
+fill = 200000
+post_fill = 50000
+claim = 100000
+
+[gas.flows.compact_resource_lock]
+open = 0        # Compact doesn't need prepare transaction
+fill = 77298
+claim = 122793
+```
+
+**Structure:**
+
+```rust
+pub struct GasConfig {
+    pub flows: HashMap<String, GasFlowConfig>,
+}
+
+pub struct GasFlowConfig {
+    pub open: Option<u64>,
+    pub fill: Option<u64>,
+    pub post_fill: Option<u64>,
+    pub pre_claim: Option<u64>,
+    pub claim: Option<u64>,
+}
+```
+
+Gas flows are identified by lock type (e.g., "permit2_escrow", "compact_resource_lock"). Each flow specifies gas limits for different transaction phases.
+
+---
+
+## Multi-File Configuration
+
+### Include Directives
+
+Split large configurations across multiple files:
+
+```toml
+# config/main.toml
+include = ["networks.toml", "api.toml", "gas.toml"]
+
+[solver]
+id = "my-solver"
+min_profitability_pct = 5.0
+monitoring_timeout_seconds = 3600
+```
+
+```toml
+# config/networks.toml
+[networks.1]
+input_settler_address = "0x..."
+# ... network configuration
+```
+
+### Rules and Behavior
+
+**Path Resolution:**
+- Relative paths resolved from the config file's directory
+- Absolute paths used as-is
+
+**Merging:**
+- Each top-level section must be unique across all files
+- If the same section appears in multiple files, an error is raised
+- Order of includes doesn't matter (merge is additive)
+
+**Circular Detection:**
+- The loader tracks visited files
+- Circular includes detected and rejected with error
+- Example: A includes B, B includes C, C includes A → Error
+
+### Loading Process
+
+```
+1. Load .env and .env.local files
+2. Read main config file
+3. Parse include directive
+4. Recursively load included files
+5. Detect circular dependencies
+6. Merge all TOML values
+7. Resolve environment variables
+8. Parse into Config struct
+9. Run validation
+```
+
+---
+
+## Environment Variable Handling
+
+### Syntax
+
+```toml
+# Required variable (fails if not set)
+private_key = "${PRIVATE_KEY}"
+
+# With default value
+host = "${API_HOST:-127.0.0.1}"
+port = ${API_PORT:-3000}
+
+# In URLs
+rpc_url = "https://${RPC_PROVIDER:-eth.llamarpc.com}"
+
+# In connection strings
+redis_url = "redis://${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}"
+```
+
+### Pattern Rules
+
+The regex pattern: `\$\{([A-Z_][A-Z0-9_]{0,127})(?::-(([^}]{0,256})))?}`
+
+**Variable Names:**
+- Must start with uppercase letter or underscore
+- Can contain uppercase letters, digits, underscores
+- Maximum 128 characters
+
+**Default Values:**
+- Specified with `:-` separator
+- Maximum 256 characters
+- Can be empty string
+
+### Environment File Loading
+
+Priority order (later overrides earlier):
+
+1. `.env` - Base environment file
+2. `.env.local` - Local overrides (higher priority)
+
+Files loaded from the current working directory.
+
+**Example .env file:**
+
+```bash
+# .env
+SOLVER_ID=production-solver
+PRIVATE_KEY=0x...
+MAINNET_RPC_URL=https://eth.llamarpc.com
+POLYGON_RPC_URL=https://polygon-rpc.com
+API_HOST=0.0.0.0
+API_PORT=3000
+```
+
+**Example .env.local file:**
+
+```bash
+# .env.local (overrides .env)
+SOLVER_ID=dev-solver
+MAINNET_RPC_URL=http://localhost:8545
+API_PORT=3001
+```
+
+### Resolution Process
+
+1. Load environment files
+2. Scan TOML for `${VAR}` or `${VAR:-default}` patterns
+3. For each variable:
+   - Check if set in environment
+   - If set: replace with value
+   - If not set and has default: replace with default
+   - If not set and no default: error
+4. Return expanded TOML
+
+### Security Features
+
+- **Input size limit**: 1MB maximum to prevent ReDoS attacks
+- **Bounded regex quantifiers**: No unbounded matching
+- **Variable name validation**: Strict pattern enforcement
+- **Atomic replacement**: All variables resolved or none (no partial expansion on error)
+
+### Examples
+
+```toml
+[solver]
+id = "${SOLVER_ID}"
+
+[account.implementations.local]
+private_key = "${SOLVER_PRIVATE_KEY}"
+
+[api]
+host = "${API_HOST:-127.0.0.1}"
+port = ${API_PORT:-3000}
+
+[[networks.1.rpc_urls]]
+http = "${MAINNET_RPC_URL:-https://eth.llamarpc.com}"
+
+[storage.implementations.redis]
+url = "redis://${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}"
+password = "${REDIS_PASSWORD}"
+
+[pricing.implementations.coingecko]
+api_key = "${COINGECKO_API_KEY:-}"  # Empty default = optional
+```
+
+---
+
+## Integration Architecture
+
+### Loading Configuration
+
+```rust
+use solver_config::Config;
+
+// Load from file (async - handles includes and env vars)
+let config = Config::from_file("config.toml").await?;
+
+// Parse from string (for testing)
+let config: Config = toml_string.parse()?;
+```
+
+### Application Startup Flow
+
+```rust
+// In solver-service main.rs
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 1. Load configuration
+    let config = Config::from_file("config/production.toml").await?;
+    
+    // 2. Initialize services with config
+    let storage = create_storage_service(&config.storage)?;
+    let account = create_account_service(&config.account)?;
+    let discovery = create_discovery_service(&config.discovery, &config.networks)?;
+    
+    // 3. Start solver engine
+    let engine = SolverEngine::new(
+        config.solver,
+        account,
+        storage,
+        discovery,
+        // ... other services
+    );
+    
+    engine.run().await?;
+    
+    Ok(())
+}
+```
+
+### Accessing Configuration
+
+```rust
+// Access solver settings
+let solver_id = &config.solver.id;
+let min_profit = config.solver.min_profitability_pct;
+
+// Access network configs
+for (chain_id, network) in &config.networks.0 {
+    println!("Chain {}: settler={}", chain_id, network.input_settler_address);
+    
+    for token in &network.tokens {
+        println!("  Token: {} at {}", token.symbol, token.address);
+    }
+}
+
+// Access primary implementation
+let storage_impl_name = &config.storage.primary;
+let storage_impl_config = config.storage.implementations
+    .get(storage_impl_name)
+    .ok_or("Missing storage implementation")?;
+
+// Parse implementation-specific config
+#[derive(Deserialize)]
+struct RedisConfig {
+    url: String,
+    password: Option<String>,
+}
+
+let redis_config: RedisConfig = toml::from_str(
+    &storage_impl_config.to_string()
+)?;
+```
+
+### Validation Rules
+
+Automatic validation enforces:
+
+**Solver:**
+- Non-empty solver ID
+- Valid monitoring timeout (30-28800 seconds)
+
+**Networks:**
+- Minimum 2 networks configured
+- Each network has required settler addresses
+- Each network has at least 1 RPC URL
+- Each network has at least 1 token
+
+**Service Implementations:**
+- Primary implementations exist in implementation maps
+- All references between services are valid
+
+**Settlement Coverage:**
+- Every order type has settlement for all configured networks
+- No duplicate settlement coverage for (order, network) pairs
+- All settlement network_ids exist in networks config
+
+**Numeric Ranges:**
+- Confirmations: 1-100
+- Cleanup interval: 1-86400 seconds
+- API port: 1-65535
+
+**API:**
+- If enabled and discovery specified, implementation must exist
+
+Validation errors fail immediately with descriptive messages including the path to the problematic field.
+
+---
+
+## Configuration Builder
+
+### Purpose
+
+The `ConfigBuilder` provides programmatic configuration construction for testing scenarios without requiring TOML files.
+
+### Basic Usage
+
+```rust
+use solver_config::ConfigBuilder;
+use rust_decimal::Decimal;
+
+let config = ConfigBuilder::new()
+    .solver_id("test-solver".to_string())
+    .monitoring_timeout_seconds(120)
+    .with_min_profitability_pct(Decimal::from(5))
+    .storage_primary("memory".to_string())
+    .storage_cleanup_interval_seconds(60)
+    .min_confirmations(3)
+    .account_primary("local".to_string())
+    .strategy_primary("simple".to_string())
+    .build();
+```
+
+### Builder Methods
+
+```rust
+impl ConfigBuilder {
+    pub fn new() -> Self;
+    
+    // Solver configuration
+    pub fn solver_id(mut self, id: String) -> Self;
+    pub fn monitoring_timeout_seconds(mut self, seconds: u64) -> Self;
+    pub fn with_min_profitability_pct(mut self, pct: Decimal) -> Self;
+    
+    // Storage configuration
+    pub fn storage_primary(mut self, primary: String) -> Self;
+    pub fn storage_cleanup_interval_seconds(mut self, seconds: u64) -> Self;
+    pub fn add_storage_implementation(mut self, name: String, config: toml::Value) -> Self;
+    
+    // Delivery configuration
+    pub fn min_confirmations(mut self, confirmations: u64) -> Self;
+    pub fn add_delivery_implementation(mut self, name: String, config: toml::Value) -> Self;
+    
+    // Account configuration
+    pub fn account_primary(mut self, primary: String) -> Self;
+    pub fn add_account_implementation(mut self, name: String, config: toml::Value) -> Self;
+    
+    // Discovery configuration
+    pub fn add_discovery_implementation(mut self, name: String, config: toml::Value) -> Self;
+    
+    // Order configuration
+    pub fn add_order_implementation(mut self, name: String, config: toml::Value) -> Self;
+    pub fn strategy_primary(mut self, primary: String) -> Self;
+    pub fn add_strategy_implementation(mut self, name: String, config: toml::Value) -> Self;
+    
+    // Settlement configuration
+    pub fn settlement_poll_interval_seconds(mut self, seconds: u64) -> Self;
+    pub fn add_settlement_implementation(mut self, name: String, config: toml::Value) -> Self;
+    
+    // Network configuration
+    pub fn add_network(mut self, chain_id: u64, config: NetworkConfig) -> Self;
+    
+    pub fn build(self) -> Config;
+}
+```
+
+### Default Values
+
+The builder provides sensible defaults:
+
+- `solver_id`: "test-solver"
+- `monitoring_timeout_seconds`: 60
+- `min_profitability_pct`: 0
+- `storage_primary`: "memory"
+- `storage_cleanup_interval_seconds`: 3600
+- `min_confirmations`: 1
+- Empty implementation maps
+- Empty networks map
+
+### Testing Example
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use toml::toml;
+
+    #[test]
+    fn test_solver_engine_with_config() {
+        let config = ConfigBuilder::new()
+            .solver_id("test-solver".to_string())
+            .storage_primary("memory".to_string())
+            .account_primary("local".to_string())
+            .add_account_implementation(
+                "local".to_string(),
+                toml! {
+                    private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+                }
+            )
+            .add_network(1, NetworkConfig {
+                input_settler_address: "0x123...".to_string(),
+                output_settler_address: "0x456...".to_string(),
+                // ... other fields
+            })
+            .add_network(137, NetworkConfig {
+                // Polygon config
+            })
+            .build();
+
+        let engine = SolverEngine::new(config).unwrap();
+        // Test engine behavior...
+    }
+}
+```
+
+---
+
+## Custom Implementation Guide
+
+### Adding a Custom Storage Implementation
+
+**1. Define your config structure:**
+
+```rust
+#[derive(Deserialize)]
+pub struct MyStorageConfig {
+    pub connection_url: String,
+    pub pool_size: usize,
+    pub timeout_seconds: u64,
+}
+```
+
+**2. Add to configuration file:**
+
+```toml
+[storage]
+primary = "my_storage"
+
+[storage.implementations.my_storage]
+connection_url = "postgresql://localhost/solver_db"
+pool_size = 10
+timeout_seconds = 30
+```
+
+**3. Parse and initialize in your implementation:**
+
+```rust
+use solver_config::Config;
+
+pub fn create_storage_service(config: &StorageConfig) -> Result<MyStorage> {
+    let impl_config = config.implementations
+        .get(&config.primary)
+        .ok_or("Storage implementation not found")?;
+
+    let my_config: MyStorageConfig = toml::from_str(
+        &impl_config.to_string()
+    )?;
+
+    MyStorage::new(my_config)
+}
+```
+
+### Adding a Custom Settlement Implementation
+
+**1. Define settlement config (required fields):**
+
+```rust
+#[derive(Deserialize)]
+pub struct MySettlementConfig {
+    pub order: String,           // Required: order standard
+    pub network_ids: Vec<u64>,   // Required: supported chains
+    pub custom_timeout: u64,
+    pub retry_attempts: u32,
+}
+```
+
+**2. Add to configuration:**
+
+```toml
+[settlement.implementations.my_settlement]
+order = "eip7683"
+network_ids = [1, 137, 42161]  # Ethereum, Polygon, Arbitrum
+custom_timeout = 300
+retry_attempts = 3
+```
+
+**3. Settlement coverage validation:**
+
+The system automatically validates:
+- `order` field exists and matches an order implementation
+- `network_ids` field exists and all IDs are in networks config
+- No duplicate coverage with other settlements for the same (order, network) pairs
+- All networks have at least one settlement for each order type
+
+### Adding a Custom Discovery Implementation
+
+**1. Define config:**
+
+```rust
+#[derive(Deserialize)]
+pub struct MyDiscoveryConfig {
+    pub api_url: String,
+    pub poll_interval_seconds: u64,
+    pub network_ids: Vec<u64>,
+    pub api_key: Option<String>,
+}
+```
+
+**2. Add to configuration:**
+
+```toml
+[discovery]
+
+[discovery.implementations.my_discovery]
+api_url = "${DISCOVERY_API_URL}"
+poll_interval_seconds = 5
+network_ids = [1, 137]
+api_key = "${DISCOVERY_API_KEY:-}"
+```
+
+**3. Initialize:**
+
+```rust
+pub fn create_discovery_service(
+    config: &DiscoveryConfig,
+    networks: &NetworksConfig,
+) -> Result<Vec<Box<dyn DiscoveryInterface>>> {
+    let mut services = Vec::new();
+    
+    for (name, impl_config) in &config.implementations {
+        match name.as_str() {
+            "my_discovery" => {
+                let my_config: MyDiscoveryConfig = toml::from_str(
+                    &impl_config.to_string()
+                )?;
+                services.push(Box::new(MyDiscovery::new(my_config)?));
+            }
+            _ => {}
+        }
+    }
+    
+    Ok(services)
+}
+```
+
+### Adding Custom API Endpoints
+
+**1. Extend ApiConfig if needed:**
+
+```toml
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 3000
+
+[api.custom]
+webhook_url = "${WEBHOOK_URL}"
+notification_enabled = true
+```
+
+**2. Access custom config:**
+
+```rust
+let api_config = config.api.as_ref().ok_or("API not configured")?;
+
+// Access standard fields
+let host = &api_config.host;
+let port = api_config.port;
+
+// For custom fields, you'll need to parse the raw TOML
+// or extend the ApiConfig struct
+```
+
+---
+
+## Example Configurations
+
+### Complete Production Configuration
+
+```toml
+# config/production.toml
+include = ["production/networks.toml", "production/api.toml", "production/gas.toml"]
+
+[solver]
+id = "${SOLVER_ID}"
+min_profitability_pct = 5.0
+monitoring_timeout_seconds = 3600
+
+[storage]
+primary = "redis"
+cleanup_interval_seconds = 3600
+
+[storage.implementations.redis]
+url = "redis://${REDIS_HOST:-localhost}:${REDIS_PORT:-6379}"
+password = "${REDIS_PASSWORD}"
+pool_size = 10
+
+[storage.implementations.memory]
+# Fallback implementation
+
+[delivery]
+min_confirmations = 3
+
+[delivery.implementations.evm_alloy]
+network_ids = [1, 137, 42161]
+
+[account]
+primary = "local"
+
+[account.implementations.local]
+private_key = "${SOLVER_PRIVATE_KEY}"
+
+[discovery]
+
+[discovery.implementations.onchain_eip7683]
+network_ids = [1, 137]
+polling_interval_secs = 0
+
+[discovery.implementations.offchain_eip7683]
+api_host = "127.0.0.1"
+api_port = 8081
+network_ids = [1, 137]
+
+[order]
+
+[order.implementations.eip7683]
+
+[order.strategy]
+primary = "simple"
+
+[order.strategy.implementations.simple]
+max_gas_price_gwei = 100
+
+[settlement]
+settlement_poll_interval_seconds = 3
+
+[settlement.implementations.permit2]
+order = "eip7683"
+network_ids = [1, 137, 42161]
+
+[settlement.implementations.compact]
+order = "eip7683"
+network_ids = [1, 137]
+
+[pricing]
+primary = "coingecko"
+
+[pricing.implementations.coingecko]
+cache_duration_seconds = 60
+rate_limit_delay_ms = 1200
+```
+
+### Networks Configuration (production/networks.toml)
+
+```toml
+# Ethereum Mainnet
+[networks.1]
+input_settler_address = "0x..."
+output_settler_address = "0x..."
+input_settler_compact_address = "0x..."
+
+[[networks.1.rpc_urls]]
+http = "${MAINNET_RPC_URL}"
+ws = "${MAINNET_WS_URL}"
+
+[[networks.1.tokens]]
+address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+symbol = "USDC"
+decimals = 6
+
+[[networks.1.tokens]]
+address = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+symbol = "USDT"
+decimals = 6
+
+# Polygon
+[networks.137]
+input_settler_address = "0x..."
+output_settler_address = "0x..."
+
+[[networks.137.rpc_urls]]
+http = "${POLYGON_RPC_URL}"
+
+[[networks.137.tokens]]
+address = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+symbol = "USDC"
+decimals = 6
+
+# Arbitrum
+[networks.42161]
+input_settler_address = "0x..."
+output_settler_address = "0x..."
+
+[[networks.42161.rpc_urls]]
+http = "${ARBITRUM_RPC_URL}"
+
+[[networks.42161.tokens]]
+address = "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8"
+symbol = "USDC"
+decimals = 6
+```
+
+### API Configuration (production/api.toml)
+
+```toml
+[api]
+enabled = true
+host = "0.0.0.0"
+port = ${API_PORT:-3000}
+timeout_seconds = 30
+max_request_size = 1048576
+
+[api.implementations]
+discovery = "offchain_eip7683"
+
+[api.rate_limiting]
+requests_per_minute = 100
+burst_size = 20
+
+[api.cors]
+allowed_origins = ["https://app.example.com", "https://admin.example.com"]
+allowed_headers = ["Content-Type", "Authorization"]
+allowed_methods = ["GET", "POST", "OPTIONS"]
+
+[api.auth]
+enabled = true
+jwt_secret = "${JWT_SECRET}"
+token_expiry_seconds = 3600
+
+[api.quote]
+validity_seconds = 20
+```
+
+### Development Configuration
+
+```toml
+# config/development.toml
+[solver]
+id = "dev-solver"
+min_profitability_pct = 0.0  # Accept all orders in dev
+monitoring_timeout_seconds = 120
+
+[storage]
+primary = "memory"
+cleanup_interval_seconds = 60
+
+[delivery]
+min_confirmations = 1  # Faster for local testing
+
+[account]
+primary = "local"
+
+[account.implementations.local]
+private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"  # Hardhat account #0
+
+[discovery]
+
+[discovery.implementations.onchain_eip7683]
+network_ids = [31337]  # Local hardhat
+polling_interval_secs = 1
+
+[order]
+
+[order.implementations.eip7683]
+
+[order.strategy]
+primary = "simple"
+
+[order.strategy.implementations.simple]
+max_gas_price_gwei = 1000  # Local node doesn't care
+
+[settlement]
+settlement_poll_interval_seconds = 1
+
+[settlement.implementations.permit2]
+order = "eip7683"
+network_ids = [31337]
+
+[networks.31337]
+input_settler_address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+output_settler_address = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+
+[[networks.31337.rpc_urls]]
+http = "http://localhost:8545"
+
+[[networks.31337.tokens]]
+address = "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+symbol = "USDC"
+decimals = 6
+
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 3000
+
+[api.implementations]
+discovery = "onchain_eip7683"
+```
+
+---
+
+## Error Handling
+
+### Error Types
+
+```rust
+pub enum ConfigError {
+    Io(std::io::Error),           // File operations
+    Parse(String),                 // TOML parsing errors
+    Validation(String),            // Business rule violations
+}
+```
+
+### Common Errors and Solutions
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| "Circular include detected" | File includes itself directly or indirectly | Fix include paths to break cycle |
+| "Duplicate section 'X' found" | Same top-level section in multiple files | Move section to single file |
+| "Environment variable 'X' not found" | Missing required env var without default | Set environment variable or add default value |
+| "At least 2 networks must be configured" | Only 1 network defined | Add second network configuration |
+| "Primary storage 'X' not found in implementations" | Primary references non-existent implementation | Add implementation or fix primary reference |
+| "Order standard 'X' has no settlement for network Y" | Missing settlement coverage | Add settlement implementation for that network |
+| "Duplicate settlement coverage for (order, network)" | Two settlements cover same combination | Adjust network_ids to avoid overlap |
+| "Settlement network_id X not found in networks config" | Settlement references undefined network | Add network or fix network_ids |
+| "Monitoring timeout must be between 30 and 28800 seconds" | Invalid timeout value | Adjust to valid range |
+| "Failed to parse TOML" | Invalid TOML syntax | Fix syntax error shown in message |
+
+### Error Examples
+
+**Circular Include:**
+
+```
+Error: ConfigError::Validation("Circular include detected: config.toml -> networks.toml -> config.toml")
+```
+
+**Missing Environment Variable:**
+
+```
+Error: ConfigError::Parse("Environment variable 'SOLVER_PRIVATE_KEY' not found and no default provided")
+```
+
+**Settlement Coverage:**
+
+```
+Error: ConfigError::Validation("Order standard 'eip7683' has no settlement coverage for network 42161")
+```
+
+---
+
+## Best Practices
+
+### Configuration Organization
+
+**1. Split by Environment:**
+
+```
+config/
+├── development.toml
+├── staging.toml
+├── production.toml
+└── shared/
+    ├── networks.toml
+    ├── gas.toml
+    └── tokens.toml
+```
+
+**2. Use Environment Variables for Secrets:**
+
+```toml
+# Good
+private_key = "${SOLVER_PRIVATE_KEY}"
+jwt_secret = "${JWT_SECRET}"
+
+# Bad - Never commit secrets
+private_key = "0xac097..."
+jwt_secret = "my-secret-key"
+```
+
+**3. Provide Defaults for Non-Secrets:**
+
+```toml
+# Good - works out of the box
+api_host = "${API_HOST:-127.0.0.1}"
+api_port = ${API_PORT:-3000}
+
+# Also good - explicit for production
+redis_host = "${REDIS_HOST}"  # Must be set
+```
+
+### Validation Strategy
+
+**1. Fail Fast:** Configuration validation happens before any services start, preventing runtime surprises.
+
+**2. Validate Early in CI/CD:**
+
+```bash
+# In CI pipeline
+cargo test --package solver-config
+cargo run --bin validate-config -- config/production.toml
+```
+
+**3. Use Builder for Tests:**
+
+```rust
+// Tests shouldn't depend on filesystem
+let config = ConfigBuilder::new()
+    .solver_id("test".to_string())
+    // ... minimal config
+    .build();
+```
+
+### Multi-Network Considerations
+
+**1. Ensure Settlement Coverage:**
+
+When adding a new network, verify all order types have settlement:
+
+```toml
+[settlement.implementations.permit2]
+order = "eip7683"
+network_ids = [1, 137, 42161]  # Add new network here
+
+[settlement.implementations.compact]
+order = "eip7683"
+network_ids = [1, 137, 42161]  # And here
+```
+
+**2. Configure All Networks:**
+
+```toml
+# Don't forget RPC URLs and tokens
+[networks.42161]
+input_settler_address = "0x..."
+output_settler_address = "0x..."
+
+[[networks.42161.rpc_urls]]
+http = "${ARBITRUM_RPC_URL}"
+
+[[networks.42161.tokens]]
+address = "0x..."
+symbol = "USDC"
+decimals = 6
+```
+
+### Performance Considerations
+
+- **Include files wisely**: Each include is a file read. Don't over-split configuration.
+- **Environment variable resolution**: Happens once at load time, no runtime overhead.
+- **Validation**: Comprehensive but fast. Only runs once at startup.
+
+### Common Pitfalls
+
+1. **Forgetting settlement coverage**: Adding a network without updating settlement implementations
+2. **Hardcoding secrets**: Never commit private keys or API keys
+3. **Missing defaults**: Production configs should use explicit env vars, development should have defaults
+4. **Circular includes**: Can happen when refactoring split configs
+5. **Mismatched network IDs**: Ensure consistency across discovery, delivery, and settlement
+6. **Invalid TOML syntax**: Missing quotes around strings, incorrect array syntax
+
+---
+
+## Related Documentation
+
+- [solver-types](/docs/solvers/crates/solver-types) - Type definitions used in configuration
+- [solver-core](/docs/solvers/crates/solver-core) - Uses configuration to initialize the solver engine
+- [solver-account](/docs/solvers/crates/solver-account) - Account implementations configured here
+- [solver-discovery](/docs/solvers/crates/solver-discovery) - Discovery implementations configured here
+- [solver-settlement](/docs/solvers/crates/solver-settlement) - Settlement coverage validation
+

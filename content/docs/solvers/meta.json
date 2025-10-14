@@ -1,4 +1,9 @@
 {
-  "title": "Solvers"
+  "title": "Solvers",
+  "pages": [
+    "overview",
+    "quickstart",
+    "api-reference",
+    "crates"
+  ]
 }
-

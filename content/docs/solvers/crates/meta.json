@@ -3,6 +3,7 @@
   "pages": [
     "solver-types",
     "solver-config",
-    "solver-account"
+    "solver-account",
+    "solver-pricing"
   ]
 }

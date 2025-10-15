@@ -1,11 +1,7 @@
 ---
 title: Solver Crates
-description: Detailed documentation for each OIF Solver crate
+description: This section provides in-depth documentation for each crate in the OIF Solver system. Each crate is documented with its purpose, architecture, integration patterns, and implementation guides.
 ---
-
-# Solver Crates
-
-This section provides in-depth documentation for each crate in the OIF Solver system. Each crate is documented with its purpose, architecture, integration patterns, and implementation guides.
 
 ## Foundation Crates
 
@@ -57,6 +53,30 @@ All crates follow a common documentation pattern:
 4. **Implementation Guide** - How to extend or customize
 5. **Best Practices** - Common patterns and pitfalls
 
+## Getting Started
+
+### For Understanding the System
+
+1. Start with **solver-types** to understand the foundational data structures
+2. Read **solver-config** to see how everything is configured
+3. Explore **solver-discovery** to understand how orders enter the system
+4. Study **solver-account** to see how transactions are signed
+
+### For Extending the System
+
+1. Review the **Implementation Guide** section in each crate
+2. Study existing implementations as examples
+3. Follow the factory pattern for registration
+4. Test with the configuration builder
+
+### For Integration
+
+Each crate provides:
+- Clear trait interfaces
+- Factory functions for instantiation
+- Configuration schemas
+- Integration examples
+
 ## Design Principles
 
 ### Plugin Architecture
@@ -90,30 +110,6 @@ Strong typing throughout:
 - Enum-based state machines
 - Trait objects for polymorphism
 - Zero-cost abstractions
-
-## Getting Started
-
-### For Understanding the System
-
-1. Start with **solver-types** to understand the foundational data structures
-2. Read **solver-config** to see how everything is configured
-3. Explore **solver-discovery** to understand how orders enter the system
-4. Study **solver-account** to see how transactions are signed
-
-### For Extending the System
-
-1. Review the **Implementation Guide** section in each crate
-2. Study existing implementations as examples
-3. Follow the factory pattern for registration
-4. Test with the configuration builder
-
-### For Integration
-
-Each crate provides:
-- Clear trait interfaces
-- Factory functions for instantiation
-- Configuration schemas
-- Integration examples
 
 ## Common Patterns
 

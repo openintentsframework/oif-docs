@@ -44,8 +44,10 @@ Before executing intents, the solver can generate quotes for users through its R
 Each quote contains:
 
 - **Order**: Complete order structure with EIP-712 signature payload (type, domain, primaryType, message, types)
-- **Failure Handling**: The failure handling mode (refund-automatic, refund-claim, needs-new-signature) [not supported yet]
-- **Partial Fill**: Boolean indicating whether partial fills are supported [not supported yet]
+- **Failure Handling**: The failure handling mode (refund-automatic, refund-claim, needs-new-signature)
+- **Partial Fill**: Boolean indicating whether partial fills are supported
+
+> **Note:** The "Failure Handling" and "Partial Fill" features are not yet supported.
 - **Valid Until**: Unix timestamp when the quote expires
 - **ETA**: Estimated time for complete cross-chain execution in seconds
 - **Quote ID**: Unique identifier for accepting the quote

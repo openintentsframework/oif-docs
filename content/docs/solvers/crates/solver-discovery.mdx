@@ -3,8 +3,6 @@ title: solver-discovery
 description: Intent ingestion layer for discovering cross-chain orders from multiple sources
 ---
 
-# solver-discovery
-
 ## Overview
 
 The `solver-discovery` crate is the intent ingestion layer for the OIF Solver. It discovers EIP-7683 cross-chain orders from multiple sources—blockchain events, HTTP APIs, or custom channels—and normalizes them into a unified `Intent` format for the solver engine to process.
@@ -629,7 +627,7 @@ pub struct Intent {
 | Field | Purpose | Set By | Used By |
 |-------|---------|--------|---------|
 | `id` | Unique order identifier | Discovery | Storage (deduplication), API (status queries) |
-| `source` | Track origin | Discovery | Monitoring (metrics), debugging |
+| `source` | Track origin | Discovery | Monitoring, debugging |
 | `standard` | Order format version | Discovery | Order implementation selection |
 | `metadata.requires_auction` | Auction flag | Discovery | Solver engine (routing) |
 | `metadata.discovered_at` | Timestamp | Discovery | Monitoring (latency tracking) |

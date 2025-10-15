@@ -29,7 +29,7 @@ Before executing intents, the solver can generate quotes for users through its R
 ### Quote Request Flow
 
 1. User submits intent parameters via `POST /api/quotes` with:
-   - User address (ERC-7930 format: `chainId:address`)
+   - User address (ERC-7930)
    - Intent details (inputs, outputs, swap type)
    - Supported order types (e.g., `oif-escrow-v0`, `oif-resource-lock-v0`, `oif-3009-v0`)
    - Optional preferences (price, speed, trust-minimization)
@@ -52,6 +52,8 @@ Each quote contains:
 - **Provider**: Solver identifier (e.g., "oif-solver")
 - **Preview**: Informational preview of input/output amounts that must be verified against the order
 
+> **Note:** The "Failure Handling" and "Partial Fill" features are not yet supported.
+
 ### Quote Signing (EIP-712)
 
 Before submitting quotes to the solver for execution, users must sign the order data:
@@ -72,7 +74,7 @@ Before submitting quotes to the solver for execution, users must sign the order 
 
 ## 3. Intent Validation
 
-Once an intent is discovered (either from on-chain events or quote API), the solver validates it:
+Once an intent is discovered (either from on-chain events or the API), the solver validates it:
 
 1. **Parse Intent Data**: Decode the intent according to the specified protocol (EIP-7683, etc.)
 2. **Validate Structure**: Ensure all required fields are present and properly formatted
@@ -124,8 +126,10 @@ The solver calculates all operational costs involved in executing the cross-chai
 Estimates gas fees for all required transactions:
 
 - **Open transaction**: On the origin chain to initiate the intent
-- **Fill transaction**: On the destination chain to fulfill the user's request (future extension, not yet implemented)
+- **Fill transaction**: On the destination chain to fulfill the user's request
 - **Claim transaction**: On the origin chain to complete settlement
+
+> **Note:** Gas calculations for settlement are not yet implemented.
 
 #### Additional Costs
 
@@ -204,33 +208,44 @@ When settlement conditions are met:
 - Update intent status to completed
 - Release any locked resources
 
-## Authorization Mechanisms
+## Settlement Mechanisms
 
-The solver supports multiple authorization mechanisms for different settlement patterns:
+The solver supports multiple settlement mechanisms for different use cases:
 
-### Permit2
+### Escrow Settlement
 
-Token approval mechanism used for escrow-based settlement patterns:
+Escrow-based settlement patterns where tokens are transferred to the solver for execution:
+
+- Tokens are held in custody by the solver during execution
+- Provides security guarantees through escrow contracts
+- Supports multiple authorization mechanisms for gasless approvals
+
+#### Authorization Mechanisms for Escrow
+
+**Permit2**
+
+Token approval mechanism for escrow-based settlement:
 
 - Enables gasless token approvals through signature-based permissions
 - Users sign approval messages instead of on-chain transactions
 - Reduces gas costs and improves user experience
 
-### TheCompact
-
-Resource lock mechanism for compact settlement:
-
-- Allows users to allocate tokens for specific purposes without transferring custody
-- Supports more complex settlement patterns
-- Enables capital-efficient cross-chain operations
-
-### EIP-3009
+**EIP-3009**
 
 Transfer authorization standard for gasless transfers:
 
 - Enables transfers via signed messages
 - Reduces user transaction costs
 - Compatible with USDC and other major tokens
+
+### Resource Lock Settlement
+
+Resource lock mechanism for compact settlement:
+
+- Allows users to allocate tokens for specific purposes without transferring custody
+- Supports more complex settlement patterns
+- Enables capital-efficient cross-chain operations
+- Uses TheCompact protocol for resource allocation
 
 ## Next Steps
 

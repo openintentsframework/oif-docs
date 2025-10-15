@@ -3,8 +3,6 @@ title: solver-config
 description: Configuration management system for OIF Solvers with multi-file loading and validation
 ---
 
-# solver-config
-
 ## Overview
 
 The `solver-config` crate provides type-safe configuration management for the OIF Solver system. It handles loading, parsing, validating, and managing all solver configurations from TOML files with support for multi-file includes, environment variable resolution, and comprehensive validation.
@@ -76,7 +74,7 @@ monitoring_timeout_seconds = 3600
 
 **Fields:**
 
-- `id` (String): Unique solver identifier used in logs and metrics
+- `id` (String): Unique solver identifier used in logs
 - `min_profitability_pct` (Decimal): Minimum profit threshold percentage before accepting orders
 - `monitoring_timeout_seconds` (u64): Maximum time to monitor transactions (range: 30-28800 seconds)
 

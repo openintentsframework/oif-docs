@@ -629,7 +629,7 @@ pub struct Intent {
 | Field | Purpose | Set By | Used By |
 |-------|---------|--------|---------|
 | `id` | Unique order identifier | Discovery | Storage (deduplication), API (status queries) |
-| `source` | Track origin | Discovery | Monitoring (metrics), debugging |
+| `source` | Track origin | Discovery | Monitoring, debugging |
 | `standard` | Order format version | Discovery | Order implementation selection |
 | `metadata.requires_auction` | Auction flag | Discovery | Solver engine (routing) |
 | `metadata.discovered_at` | Timestamp | Discovery | Monitoring (latency tracking) |

@@ -105,42 +105,13 @@ Generate price quotes for cross-chain token transfers. This endpoint processes y
 }
 ```
 
-**Parameters:**
+**Parameters**
 
-- `user` (string, required): User address in ERC-7930 interoperable format (hex-encoded)
-- `intent` (object, required): Cross-chain intent specification
-  - `intentType` (string, required): Type of intent operation (currently `"oif-swap"`)
-  - `inputs` (array, required): Input assets from the user
-    - `user` (string): User address in ERC-7930 format (hex-encoded)
-    - `asset` (string): Asset address in ERC-7930 format (hex-encoded)
-    - `amount` (string): Amount as a decimal string (required for exact-input)
-    - `lock` (object, optional): Reference to existing asset lock
-      - `kind` (string): Lock mechanism type (`"the-compact"`, `"rhinestone"`)
-      - `params` (object, optional): Lock-specific parameters
-  - `outputs` (array, required): Desired output tokens and destinations
-    - `receiver` (string): Receiver address in ERC-7930 format (hex-encoded)
-    - `asset` (string): Asset address in ERC-7930 format (hex-encoded)
-    - `amount` (string): Amount as a decimal string (required for exact-output)
-    - `calldata` (string, optional): Optional calldata for the output
-  - `swapType` (string, required): Swap type determining which amounts are fixed
-    - `"exact-input"`: Input amounts are exact, outputs are estimates
-    - `"exact-output"`: Output amounts are exact, inputs are estimates
-  - `minValidUntil` (integer, optional): Minimum Unix timestamp for quote validity
-  - `preference` (string, optional): Optimization preference for quote generation
-    - `"price"`: Optimize for lowest cost
-    - `"speed"`: Optimize for fastest execution
-    - `"input-priority"`: Prioritize specific input tokens (order significant)
-    - `"trust-minimization"`: Maximum trust minimization
-  - `originSubmission` (object, optional): Origin transaction submission preferences
-    - `mode` (string): Who submits the origin transaction (`"user"` or `"protocol"`)
-    - `schemes` (array): Supported authentication schemes (`"erc4337"`, `"permit2"`, `"erc20-permit"`, `"eip3009"`)
-  - `failureHandling` (array, optional): Accepted failure handling modes (`"refund-automatic"`, `"refund-claim"`, `"needs-new-signature"`)
-  - `partialFill` (boolean, optional): Whether partial fills are acceptable
-  - `metadata` (object, optional): Additional intent metadata
-- `supportedTypes` (array, required): List of order types supported by the client
-  - `"oif-escrow-v0"`: Permit2-based escrow orders
-  - `"oif-resource-lock-v0"`: TheCompact resource lock orders
-  - `"oif-3009-v0"`: EIP-3009 gasless transfer orders
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `user` | string | Yes | User address in ERC-7930 interoperable format (hex-encoded) |
+| `intent` | object | Yes | Cross-chain intent specification (see [Intent Object Properties](#intent-object-properties)) |
+| `supportedTypes` | array | Yes | List of order types supported by the client (see [Enumeration Values](#enumeration-values)) |
 
 **Response:**
 
@@ -210,31 +181,23 @@ Generate price quotes for cross-chain token transfers. This endpoint processes y
 
 **Response Fields:**
 
-- `quotes` (array): Array of available quote options
-  - `order` (object): Complete order structure ready for signing
-    - `type` (string): Order type (`"oif-escrow-v0"`, `"oif-resource-lock-v0"`, `"oif-3009-v0"`)
-    - `payload` (object): EIP-712 compliant order payload
-      - `signatureType` (string): Signature standard (currently `"eip712"`)
-      - `domain` (object): EIP-712 domain separator
-      - `primaryType` (string): Primary type for EIP-712 signing
-      - `message` (object): Message object to be signed
-      - `types` (object, optional): EIP-712 type definitions (may be inferred)
-    - `metadata` (object, optional): Additional metadata (for `oif-3009-v0` orders)
-  - `failureHandling` (string): Failure handling mechanism (`"refund-automatic"`, `"refund-claim"`, `"needs-new-signature"`)
-  - `partialFill` (boolean): Whether partial fills are supported
-  - `validUntil` (integer): Unix timestamp when quote expires
-  - `eta` (integer, optional): Estimated time to completion in seconds
-  - `quoteId` (string): Unique quote identifier for acceptance via `/api/orders`
-  - `provider` (string): Solver provider identifier
-  - `preview` (object): Informational preview of amounts (must be verified against order)
-    - `inputs` (array): Preview of input amounts and assets
-    - `outputs` (array): Preview of output amounts and assets
+| Field | Type | Description |
+|-------|------|-------------|
+| `quotes` | array | Array of available quote options |
 
-**Order Types:**
+<a id="quote-object-properties"></a>
+**Quote Object Properties:**
 
-- `oif-escrow-v0`: Permit2-based escrow orders using `PermitBatchWitnessTransferFrom`
-- `oif-resource-lock-v0`: TheCompact resource lock orders using `BatchCompact`
-- `oif-3009-v0`: EIP-3009 gasless transfer orders
+| Property | Type | Description |
+|----------|------|-------------|
+| `order` | object | Complete order structure ready for signing (see [Order Object Properties](#order-object-properties)) |
+| `failureHandling` | string | Failure handling mechanism (`"refund-automatic"`, `"refund-claim"`, `"needs-new-signature"`) |
+| `partialFill` | boolean | Whether partial fills are supported |
+| `validUntil` | integer | Unix timestamp when quote expires |
+| `eta` | integer | Estimated time to completion in seconds (optional) |
+| `quoteId` | string | Unique quote identifier for acceptance via `/api/orders` |
+| `provider` | string | Solver provider identifier |
+| `preview` | object | Informational preview of amounts (must be verified against order) (see [Preview Object Properties](#preview-object-properties)) |
 
 ### Authentication
 
@@ -258,15 +221,20 @@ API authentication. This endpoint allows self-service registration for API acces
 
 **Parameters:**
 
-- `client_id` (string, required): Unique identifier for your client (3-100 characters)
-- `client_name` (string, optional): Display name for your application
-- `scopes` (array, optional): Requested permissions (defaults to ["read-orders"])
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `client_id` | string | Yes | Unique identifier for your client (3-100 characters) |
+| `client_name` | string | No | Display name for your application |
+| `scopes` | array | No | Requested permissions (defaults to ["read-orders"]) (see [Available Scopes](#available-scopes)) |
 
+<a id="available-scopes"></a>
 **Available Scopes:**
 
-- `read-orders`: Retrieve order status and details
-- `create-orders`: Submit new orders
-- `admin-all`: Full administrative access
+| Scope | Description |
+|-------|-------------|
+| `read-orders` | Retrieve order status and details |
+| `create-orders` | Submit new orders |
+| `admin-all` | Full administrative access |
 
 **Response:**
 
@@ -286,13 +254,15 @@ API authentication. This endpoint allows self-service registration for API acces
 
 **Response Fields:**
 
-- `access_token` (string): JWT access token for API requests (short-lived, typically 1 hour)
-- `refresh_token` (string): JWT refresh token for obtaining new access tokens (long-lived, typically 30 days)
-- `client_id` (string): Your client identifier
-- `access_token_expires_at` (integer): Unix timestamp when access token expires
-- `refresh_token_expires_at` (integer): Unix timestamp when refresh token expires
-- `scopes` (array): Granted permissions
-- `token_type` (string): Always "Bearer"
+| Field | Type | Description |
+|-------|------|-------------|
+| `access_token` | string | JWT access token for API requests (short-lived, typically 1 hour) |
+| `refresh_token` | string | JWT refresh token for obtaining new access tokens (long-lived, typically 30 days) |
+| `client_id` | string | Your client identifier |
+| `access_token_expires_at` | integer | Unix timestamp when access token expires |
+| `refresh_token_expires_at` | integer | Unix timestamp when refresh token expires |
+| `scopes` | array | Granted permissions |
+| `token_type` | string | Always "Bearer" |
 
 **Error Responses:**
 
@@ -368,7 +338,9 @@ Exchange a valid refresh token for new access and refresh tokens. This endpoint 
 
 **Parameters:**
 
-- `refresh_token` (string, required): The refresh token obtained from registration or previous refresh
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `refresh_token` | string | Yes | The refresh token obtained from registration or previous refresh |
 
 **Response:**
 
@@ -388,13 +360,15 @@ Exchange a valid refresh token for new access and refresh tokens. This endpoint 
 
 **Response Fields:**
 
-- `access_token` (string): New JWT access token for API requests
-- `refresh_token` (string): New JWT refresh token (the old one is invalidated)
-- `client_id` (string): Your client identifier
-- `access_token_expires_at` (integer): Unix timestamp when new access token expires
-- `refresh_token_expires_at` (integer): Unix timestamp when new refresh token expires
-- `scopes` (array): Your granted permissions (same as original registration)
-- `token_type` (string): Always "Bearer"
+| Field | Type | Description |
+|-------|------|-------------|
+| `access_token` | string | New JWT access token for API requests |
+| `refresh_token` | string | New JWT refresh token (the old one is invalidated) |
+| `client_id` | string | Your client identifier |
+| `access_token_expires_at` | integer | Unix timestamp when new access token expires |
+| `refresh_token_expires_at` | integer | Unix timestamp when new refresh token expires |
+| `scopes` | array | Your granted permissions (same as original registration) |
+| `token_type` | string | Always "Bearer" |
 
 **Error Responses:**
 
@@ -456,11 +430,7 @@ Submit cross-chain intent orders for execution. This endpoint accepts both quote
 
 **Authentication:** Requires `create-orders` scope when JWT authentication is enabled.
 
-**Supported Order Types:**
-
-- `oif-escrow-v0`: Permit2-based escrow orders
-- `oif-resource-lock-v0`: TheCompact resource lock orders
-- `oif-3009-v0`: EIP-3009 gasless transfer orders
+**Supported Order Types:** See [Order Types](#order-types).
 
 **Request Body Options:**
 
@@ -520,26 +490,20 @@ Submit cross-chain intent orders for execution. This endpoint accepts both quote
 
 **Parameters:**
 
-For Quote Acceptance:
+**For Quote Acceptance:**
 
-- `quoteId` (string, required): Quote identifier from a previously generated quote
-- `signature` (string, required): Hex-encoded signature bytes
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `quoteId` | string | Yes | Quote identifier from a previously generated quote |
+| `signature` | string | Yes | Hex-encoded signature bytes |
 
-For Direct Submission:
+**For Direct Submission:**
 
-- `order` (object, required): Complete order structure
-  - `type` (string): Order type (`"oif-escrow-v0"`, `"oif-resource-lock-v0"`, `"oif-3009-v0"`)
-  - `payload` (object): EIP-712 compliant order payload
-    - `signatureType` (string): Signature standard (currently `"eip712"`)
-    - `domain` (object): EIP-712 domain separator
-    - `primaryType` (string): Primary type for EIP-712 signing
-    - `message` (object): Message object to be signed
-    - `types` (object, optional): EIP-712 type definitions
-  - `metadata` (object, optional): Additional metadata (for `oif-3009-v0` orders)
-- `signature` (string, required): Hex-encoded signature bytes
-- `originSubmission` (object, optional): Origin submission mode and schemes information
-  - `mode` (string): Who submits (`"user"` or `"protocol"`)
-  - `schemes` (array): Authentication schemes (`"erc4337"`, `"permit2"`, `"erc20-permit"`, `"eip3009"`)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `order` | object | Yes | Complete order structure (see [Order Object Properties](#order-object-properties)) |
+| `signature` | string | Yes | Hex-encoded signature bytes |
+| `originSubmission` | object | No | Origin submission mode and schemes information (see [Origin Submission Object Properties](#origin-submission-object-properties)) |
 
 **Response:**
 
@@ -556,10 +520,12 @@ For Direct Submission:
 
 **Response Fields:**
 
-- `orderId` (string, nullable): Unique identifier for the submitted order
-- `status` (string): Submission status (`"received"`, `"rejected"`, `"error"`)
-- `message` (string, nullable): Optional message providing additional context
-- `order` (object, nullable): Optional echo of the submitted order for confirmation
+| Field | Type | Description |
+|-------|------|-------------|
+| `orderId` | string | Unique identifier for the submitted order (nullable) |
+| `status` | string | Submission status (`"received"`, `"rejected"`, `"error"`) |
+| `message` | string | Optional message providing additional context (nullable) |
+| `order` | object | Optional echo of the submitted order for confirmation (nullable) (see [Order Object Properties](#order-object-properties)) |
 
 **Error Responses:**
 
@@ -728,25 +694,49 @@ Retrieve the current status and details of a submitted order. Use this endpoint 
 
 **Response Fields:**
 
-- `order` (object): Detailed information about the order
-  - `id` (string): Unique identifier for this order
-  - `status` (string): Current order status (see below)
-  - `createdAt` (integer): Unix timestamp when order was created
-  - `updatedAt` (integer): Unix timestamp when order was last updated
-  - `quoteId` (string, nullable): Associated quote ID if created from a quote
-  - `inputAmount` (object): Input asset and amount
-    - `asset` (string): Asset address
-    - `amount` (string): Amount as decimal string
-  - `outputAmount` (object): Output asset and amount
-    - `asset` (string): Asset address
-    - `amount` (string): Amount as decimal string
-  - `settlement` (object): Settlement mechanism information
-    - `type` (string): Settlement type (`"escrow"`, `"resourcelock"`)
-    - `data` (object): Settlement-specific data
-  - `fillTransaction` (object, nullable): Transaction details if executed
-    - `hash` (string): Transaction hash
-    - `status` (string): Transaction status (`"pending"`, `"executed"`, `"failed"`)
-    - `timestamp` (integer): Unix timestamp of the transaction
+| Field | Type | Description |
+|-------|------|-------------|
+| `order` | object | Detailed information about the order (see [Order Status Object Properties](#order-status-object-properties)) |
+
+<a id="order-status-object-properties"></a>
+**Order Status Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | string | Unique identifier for this order |
+| `status` | string | Current order status (see below) |
+| `createdAt` | integer | Unix timestamp when order was created |
+| `updatedAt` | integer | Unix timestamp when order was last updated |
+| `quoteId` | string | Associated quote ID if created from a quote (nullable) |
+| `inputAmount` | object | Input asset and amount (see [Input/Output Amount Object Properties](#inputoutput-amount-object-properties)) |
+| `outputAmount` | object | Output asset and amount (see [Input/Output Amount Object Properties](#inputoutput-amount-object-properties)) |
+| `settlement` | object | Settlement mechanism information (see [Settlement Object Properties](#settlement-object-properties)) |
+| `fillTransaction` | object | Transaction details if executed (nullable) (see [Fill Transaction Object Properties](#fill-transaction-object-properties)) |
+
+<a id="inputoutput-amount-object-properties"></a>
+**Input/Output Amount Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `asset` | string | Asset address |
+| `amount` | string | Amount as decimal string |
+
+<a id="settlement-object-properties"></a>
+**Settlement Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `type` | string | Settlement type (`"escrow"`, `"resourcelock"`) |
+| `data` | object | Settlement-specific data |
+
+<a id="fill-transaction-object-properties"></a>
+**Fill Transaction Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `hash` | string | Transaction hash |
+| `status` | string | Transaction status (`"pending"`, `"executed"`, `"failed"`) |
+| `timestamp` | integer | Unix timestamp of the transaction |
 
 **Order Status Values:**
 
@@ -823,14 +813,19 @@ Retrieve all supported tokens across all configured networks. This endpoint prov
 
 **Response Fields:**
 
-- `networks` (object): Map of chain ID (as string) to network token information
-  - `chain_id` (integer): The blockchain network ID
-  - `input_settler` (string): Input settler contract address for this network
-  - `output_settler` (string): Output settler contract address for this network
-  - `tokens` (array): List of supported tokens on this network
-    - `address` (string): Token contract address
-    - `symbol` (string): Token symbol (e.g., "USDC", "USDT")
-    - `decimals` (integer): Number of decimal places for the token
+| Field | Type | Description |
+|-------|------|-------------|
+| `networks` | object | Map of chain ID (as string) to network token information (see [Network Object Properties](#network-object-properties)) |
+
+<a id="network-object-properties"></a>
+**Network Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `chain_id` | integer | The blockchain network ID |
+| `input_settler` | string | Input settler contract address for this network |
+| `output_settler` | string | Output settler contract address for this network |
+| `tokens` | array | List of supported tokens on this network (see [Token Object Properties](#token-object-properties)) |
 
 **Example:**
 
@@ -874,13 +869,12 @@ Retrieve supported tokens for a specific blockchain network. Use this endpoint t
 
 **Response Fields:**
 
-- `chain_id` (integer): The blockchain network ID
-- `input_settler` (string): Input settler contract address for this network
-- `output_settler` (string): Output settler contract address for this network
-- `tokens` (array): List of supported tokens on this network
-  - `address` (string): Token contract address
-  - `symbol` (string): Token symbol
-  - `decimals` (integer): Number of decimal places
+| Field | Type | Description |
+|-------|------|-------------|
+| `chain_id` | integer | The blockchain network ID |
+| `input_settler` | string | Input settler contract address for this network |
+| `output_settler` | string | Output settler contract address for this network |
+| `tokens` | array | List of supported tokens on this network (see [Token Object Properties](#token-object-properties)) |
 
 **Error Responses:**
 
@@ -901,6 +895,123 @@ curl http://localhost:3000/api/tokens/1
 # Get tokens for Arbitrum
 curl http://localhost:3000/api/tokens/42161
 ```
+
+## Common Types
+
+This section defines shared object schemas and enums referenced across endpoints.
+
+<a id="intent-object-properties"></a>
+**Intent Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `intentType` | string | Yes | Type of intent operation (currently `"oif-swap"`) |
+| `inputs` | array | Yes | Input assets from the user (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+| `outputs` | array | Yes | Desired output tokens and destinations (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+| `swapType` | string | Yes | Swap type determining which amounts are fixed (see [Enumeration Values](#enumeration-values)) |
+| `minValidUntil` | integer | No | Minimum Unix timestamp for quote validity |
+| `preference` | string | No | Optimization preference for quote generation (see [Enumeration Values](#enumeration-values)) |
+| `originSubmission` | object | No | Origin transaction submission preferences (see [Origin Submission Object Properties](#origin-submission-object-properties)) |
+| `failureHandling` | array | No | Accepted failure handling modes (see [Enumeration Values](#enumeration-values)) |
+| `partialFill` | boolean | No | Whether partial fills are acceptable |
+| `metadata` | object | No | Additional intent metadata |
+
+<a id="inputoutput-object-properties"></a>
+**Input/Output Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `user`/`receiver` | string | Yes | User/receiver address in ERC-7930 format (hex-encoded) |
+| `asset` | string | Yes | Asset address in ERC-7930 format (hex-encoded) |
+| `amount` | string | Yes* | Amount as a decimal string (*required for exact-input/exact-output) |
+| `lock` | object | No | Reference to existing asset lock (inputs only) (see [Lock Object Properties](#lock-object-properties)) |
+| `calldata` | string | No | Optional calldata for the output (outputs only) |
+
+<a id="lock-object-properties"></a>
+**Lock Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `kind` | string | Yes | Lock mechanism type (see [Enumeration Values](#enumeration-values)) |
+| `params` | object | No | Lock-specific parameters |
+
+<a id="origin-submission-object-properties"></a>
+**Origin Submission Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `mode` | string | Yes | Who submits the origin transaction (see [Enumeration Values](#enumeration-values)) |
+| `schemes` | array | Yes | Supported authentication schemes (see [Enumeration Values](#enumeration-values)) |
+
+<a id="enumeration-values"></a>
+**Enumeration Values**
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `swapType` | `"exact-input"` | Input amounts are exact, outputs are estimates |
+|  | `"exact-output"` | Output amounts are exact, inputs are estimates |
+| `preference` | `"price"` | Optimize for lowest cost |
+|  | `"speed"` | Optimize for fastest execution |
+|  | `"input-priority"` | Prioritize specific input tokens (order significant) |
+|  | `"trust-minimization"` | Maximum trust minimization |
+| `originSubmission.mode` | `"user"` | User submits the origin transaction |
+|  | `"protocol"` | Protocol submits the origin transaction |
+| `originSubmission.schemes` | `"erc4337"` | ERC-4337 account abstraction |
+|  | `"permit2"` | Permit2 signature-based approvals |
+|  | `"erc20-permit"` | ERC-2612 permit function |
+|  | `"eip3009"` | EIP-3009 transfer authorization |
+| `failureHandling` | `"refund-automatic"` | Automatic refund on failure |
+|  | `"refund-claim"` | Manual refund claim required |
+|  | `"needs-new-signature"` | New signature required on failure |
+| `supportedTypes` | `"oif-escrow-v0"` | Permit2-based escrow orders |
+|  | `"oif-resource-lock-v0"` | TheCompact resource lock orders |
+|  | `"oif-3009-v0"` | EIP-3009 gasless transfer orders |
+
+<a id="order-types"></a>
+**Order Types**
+
+- `oif-escrow-v0`: Permit2-based escrow orders using `PermitBatchWitnessTransferFrom`
+- `oif-resource-lock-v0`: TheCompact resource lock orders using `BatchCompact`
+- `oif-3009-v0`: EIP-3009 gasless transfer orders
+
+<a id="order-object-properties"></a>
+**Order Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `type` | string | Order type (`"oif-escrow-v0"`, `"oif-resource-lock-v0"`, `"oif-3009-v0"`) |
+| `payload` | object | EIP-712 compliant order payload (see [Payload Object Properties](#payload-object-properties)) |
+| `metadata` | object | Additional metadata (for `oif-3009-v0` orders) (optional) |
+
+<a id="payload-object-properties"></a>
+**Payload Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `signatureType` | string | Signature standard (currently `"eip712"`) |
+| `domain` | object | EIP-712 domain separator |
+| `primaryType` | string | Primary type for EIP-712 signing |
+| `message` | object | Message object to be signed |
+| `types` | object | EIP-712 type definitions (may be inferred) (optional) |
+
+<a id="preview-object-properties"></a>
+**Preview Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `inputs` | array | Array of input preview items (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+| `outputs` | array | Array of output preview items (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+
+
+
+<a id="token-object-properties"></a>
+**Token Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `address` | string | Token contract address |
+| `symbol` | string | Token symbol (e.g., "USDC", "USDT") |
+| `decimals` | integer | Number of decimal places for the token |
 
 ## API Configuration
 

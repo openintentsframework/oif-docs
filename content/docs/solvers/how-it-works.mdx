@@ -46,13 +46,13 @@ Each quote contains:
 - **Order**: Complete order structure with EIP-712 signature payload (type, domain, primaryType, message, types)
 - **Failure Handling**: The failure handling mode (refund-automatic, refund-claim, needs-new-signature)
 - **Partial Fill**: Boolean indicating whether partial fills are supported
-
-> **Note:** The "Failure Handling" and "Partial Fill" features are not yet supported.
 - **Valid Until**: Unix timestamp when the quote expires
 - **ETA**: Estimated time for complete cross-chain execution in seconds
 - **Quote ID**: Unique identifier for accepting the quote
 - **Provider**: Solver identifier (e.g., "oif-solver")
 - **Preview**: Informational preview of input/output amounts that must be verified against the order
+
+> **Note:** The "Failure Handling" and "Partial Fill" features are not yet supported.
 
 ### Quote Signing (EIP-712)
 
@@ -127,8 +127,9 @@ Estimates gas fees for all required transactions:
 
 - **Open transaction**: On the origin chain to initiate the intent
 - **Fill transaction**: On the destination chain to fulfill the user's request
-> **Note:** Gas calculations for settlement are not yet implemented.
 - **Claim transaction**: On the origin chain to complete settlement
+
+> **Note:** Gas calculations for settlement are not yet implemented.
 
 #### Additional Costs
 

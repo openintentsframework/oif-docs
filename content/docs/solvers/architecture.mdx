@@ -32,79 +32,46 @@ Built from the ground up for cross-chain operations:
 ## High-Level Architecture
 
 ```mermaid
-graph TB
-    subgraph "External Sources"
-        OnChain[On-Chain Events]
-        OffChain[Off-Chain APIs]
-        RestAPI[REST API Clients]
+graph LR
+    subgraph "Input"
+        API[REST API]
+        Events[On-Chain Events]
     end
 
-    subgraph "OIF Solver"
-        subgraph "Discovery Layer"
-            DiscoveryService[Discovery Service]
-            OnChainDisc[On-Chain Discovery]
-            OffChainDisc[Off-Chain Discovery]
-        end
-
-        subgraph "Core Engine"
-            CoreEngine[Core Engine]
-            EventBus[Event Bus]
-            StateMachine[Order State Machine]
-        end
-
-        subgraph "Service Layer"
-            OrderService[Order Service]
-            DeliveryService[Delivery Service]
-            SettlementService[Settlement Service]
-            PricingService[Pricing Service]
-        end
-
-        subgraph "Infrastructure"
-            StorageService[Storage Service]
-            AccountService[Account Service]
-            ConfigService[Config Service]
-            TypeSystem[Type System]
-        end
-
-        subgraph "Application"
-            SolverService[Solver Service / API]
-        end
+    Discovery[Discovery Service]
+    Core[Core Engine]
+    
+    subgraph "Services"
+        Order[Order Service]
+        Delivery[Delivery Service]
+        Settlement[Settlement Service]
+        Pricing[Pricing Service]
+    end
+    
+    Storage[Storage & Config]
+    
+    subgraph "Blockchains"
+        Origin[Origin Chain]
+        Dest[Destination Chain]
     end
 
-    subgraph "Blockchain Networks"
-        OriginChain[Origin Chain]
-        DestChain[Destination Chain]
-        OtherChains[Other Chains...]
-    end
-
-    OnChain --> OnChainDisc
-    OffChain --> OffChainDisc
-    RestAPI --> OffChainDisc
-
-    OnChainDisc --> DiscoveryService
-    OffChainDisc --> DiscoveryService
-    DiscoveryService --> CoreEngine
-
-    CoreEngine --> EventBus
-    EventBus --> OrderService
-    EventBus --> DeliveryService
-    EventBus --> SettlementService
-
-    OrderService --> StorageService
-    OrderService --> PricingService
-    DeliveryService --> AccountService
-    SettlementService --> StorageService
-    PricingService --> TypeSystem
-
-    SolverService --> CoreEngine
-    SolverService --> ConfigService
-
-    DeliveryService --> OriginChain
-    DeliveryService --> DestChain
-    DeliveryService --> OtherChains
-
-    SettlementService --> OriginChain
-    SettlementService --> DestChain
+    API --> Discovery
+    Events --> Discovery
+    Discovery --> Core
+    Core --> Order
+    Core --> Delivery
+    Core --> Settlement
+    Core --> Pricing
+    
+    Order -.-> Storage
+    Delivery -.-> Storage
+    Settlement -.-> Storage
+    Pricing -.-> Storage
+    
+    Delivery ==> Origin
+    Delivery ==> Dest
+    Settlement ==> Origin
+    Settlement ==> Dest
 ```
 
 ## Component Architecture

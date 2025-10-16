@@ -1,0 +1,1038 @@
+---
+title: API Reference
+description: The OIF Solver provides a REST API for interacting with the system.
+---
+
+## Base URL
+
+```
+http://localhost:3000/api
+```
+
+## API Specifications
+
+Complete OpenAPI specifications are available in the `api-spec/` directory:
+
+- **Orders API** - Submit and track cross-chain intent orders
+- **Tokens API** - Query supported tokens and networks
+- **Quotes API** - Generate price quotes for cross-chain token transfers
+- **Authentication API** - Register clients and manage JWT authentication
+
+## Authentication
+
+The API supports JWT (JSON Web Token) authentication for secure access in production deployments. Authentication can be configured in the solver settings.
+
+### JWT Authentication
+
+When JWT authentication is enabled, include the token in the `Authorization` header:
+
+```bash
+curl -X POST http://localhost:3000/api/orders \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order": {
+      "type": "oif-escrow-v0",
+      "payload": {
+        "signatureType": "eip712",
+        "domain": {...},
+        "primaryType": "PermitBatchWitnessTransferFrom",
+        "message": {...}
+      }
+    },
+    "signature": "0x..."
+  }'
+```
+
+### Configuration
+
+Enable JWT authentication in your configuration file:
+
+```toml
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 3000
+
+[api.auth]
+enabled = true
+issuer = "oif-solver"
+jwt_secret = "your-secret-jwt-token"
+```
+
+**Note**: For development and testing, authentication can be disabled by setting `enabled = false` in the `[api.auth]` section.
+
+## Endpoints
+
+### Quotes
+
+#### Get Quote
+
+**POST** `/api/quotes`
+
+Generate price quotes for cross-chain token transfers. This endpoint processes your intent request and returns executable quote options with different settlement mechanisms and optimization strategies.
+
+**Request Body:**
+
+```json
+{
+  "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+  "intent": {
+    "intentType": "oif-swap",
+    "inputs": [
+      {
+        "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+        "asset": "0x010000010101a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "amount": "1000000"
+      }
+    ],
+    "outputs": [
+      {
+        "receiver": "0x010000010302a461014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+        "asset": "0x010000010302a46114af88d065e77c8cc2239327c5edb3a432268e5831",
+        "amount": "990000"
+      }
+    ],
+    "swapType": "exact-input",
+    "preference": "price",
+    "originSubmission": {
+      "mode": "user",
+      "schemes": ["permit2"]
+    },
+    "failureHandling": ["refund-automatic"],
+    "partialFill": false
+  },
+  "supportedTypes": ["oif-escrow-v0", "oif-resource-lock-v0"]
+}
+```
+
+**Parameters**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `user` | string | Yes | User address in ERC-7930 interoperable format (hex-encoded) |
+| `intent` | object | Yes | Cross-chain intent specification (see [Intent Object Properties](#intent-object-properties)) |
+| `supportedTypes` | array | Yes | List of order types supported by the client (see [Enumeration Values](#enumeration-values)) |
+
+**Response:**
+
+```json
+{
+  "quotes": [
+    {
+      "order": {
+        "type": "oif-escrow-v0",
+        "payload": {
+          "signatureType": "eip712",
+          "domain": {
+            "name": "Permit2",
+            "chainId": "1",
+            "verifyingContract": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+          },
+          "primaryType": "PermitBatchWitnessTransferFrom",
+          "message": {
+            "permitted": [
+              {
+                "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                "amount": "1000000"
+              }
+            ],
+            "spender": "0x1234567890abcdef1234567890abcdef12345678",
+            "nonce": "123456",
+            "deadline": "1700000000",
+            "witness": {
+              "outputs": [
+                {
+                  "chainId": "42161",
+                  "token": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+                  "amount": "990000",
+                  "recipient": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failureHandling": "refund-automatic",
+      "partialFill": false,
+      "validUntil": 1700000300,
+      "eta": 120,
+      "quoteId": "quote_abc123def456",
+      "provider": "oif-solver-v1",
+      "preview": {
+        "inputs": [
+          {
+            "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+            "asset": "0x010000010101a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "amount": "1000000"
+          }
+        ],
+        "outputs": [
+          {
+            "receiver": "0x010000010302a461014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+            "asset": "0x010000010302a46114af88d065e77c8cc2239327c5edb3a432268e5831",
+            "amount": "990000"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `quotes` | array | Array of available quote options |
+
+<a id="quote-object-properties"></a>
+**Quote Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `order` | object | Complete order structure ready for signing (see [Order Object Properties](#order-object-properties)) |
+| `failureHandling` | string | Failure handling mechanism (`"refund-automatic"`, `"refund-claim"`, `"needs-new-signature"`) |
+| `partialFill` | boolean | Whether partial fills are supported |
+| `validUntil` | integer | Unix timestamp when quote expires |
+| `eta` | integer | Estimated time to completion in seconds (optional) |
+| `quoteId` | string | Unique quote identifier for acceptance via `/api/orders` |
+| `provider` | string | Solver provider identifier |
+| `preview` | object | Informational preview of amounts (must be verified against order) (see [Preview Object Properties](#preview-object-properties)) |
+
+### Authentication
+
+#### Register Client
+
+**POST** `/api/auth/register`
+
+Register a new client and receive both access and refresh tokens for
+API authentication. This endpoint allows self-service registration for API access with dual-token authentication.
+
+**Note:** The solver currently does not implement client blacklisting or whitelisting for registration. Any client can register and obtain tokens. Access control mechanisms (blacklist/whitelist) are planned for future releases.
+
+**Request Body:**
+
+```json
+{
+  "client_id": "my-app-v1.0",
+  "client_name": "My Trading Application"
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `client_id` | string | Yes | Unique identifier for your client (3-100 characters) |
+| `client_name` | string | No | Display name for your application |
+| `scopes` | array | No | Requested permissions (defaults to ["read-orders"]) (see [Available Scopes](#available-scopes)) |
+
+<a id="available-scopes"></a>
+**Available Scopes:**
+
+| Scope | Description |
+|-------|-------------|
+| `read-orders` | Retrieve order status and details |
+| `create-orders` | Submit new orders |
+| `admin-all` | Full administrative access |
+
+**Response:**
+
+**Success (201 - Created):**
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "client_id": "my-app-v1.0",
+  "access_token_expires_at": 1700003600,
+  "refresh_token_expires_at": 1702595600,
+  "scopes": ["read-orders", "create-orders"],
+  "token_type": "Bearer"
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `access_token` | string | JWT access token for API requests (short-lived, typically 1 hour) |
+| `refresh_token` | string | JWT refresh token for obtaining new access tokens (long-lived, typically 30 days) |
+| `client_id` | string | Your client identifier |
+| `access_token_expires_at` | integer | Unix timestamp when access token expires |
+| `refresh_token_expires_at` | integer | Unix timestamp when refresh token expires |
+| `scopes` | array | Granted permissions |
+| `token_type` | string | Always "Bearer" |
+
+**Error Responses:**
+
+**400 - Bad Request:**
+
+```json
+{
+  "error": "Client ID must be between 3 and 100 characters"
+}
+```
+
+```json
+{
+  "error": "Invalid scopes: Unknown scope: invalid-scope"
+}
+```
+
+**500 - Internal Server Error:**
+
+```json
+{
+  "error": "Failed to generate access token"
+}
+```
+
+**503 - Service Unavailable:**
+
+```json
+{
+  "error": "Authentication service is not configured"
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "my-trading-bot",
+    "client_name": "Advanced Trading Bot",
+    "scopes": ["read-orders", "create-orders"]
+  }'
+```
+
+**Using the Access Token:**
+
+Include the access token in subsequent API requests:
+
+```bash
+curl -X POST http://localhost:3000/api/orders \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "quoteId": "quote_abc123def456",
+    "signature": "0x1234567890abcdef..."
+  }'
+```
+
+#### Refresh Token
+
+**POST** `/api/auth/refresh`
+
+Exchange a valid refresh token for new access and refresh tokens. This endpoint allows you to obtain fresh tokens without re-authentication. The old refresh token is invalidated and cannot be reused.
+
+**Request Body:**
+
+```json
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `refresh_token` | string | Yes | The refresh token obtained from registration or previous refresh |
+
+**Response:**
+
+**Success (200):**
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "client_id": "my-app-v1.0",
+  "access_token_expires_at": 1700007200,
+  "refresh_token_expires_at": 1702599200,
+  "scopes": ["read-orders", "create-orders"],
+  "token_type": "Bearer"
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `access_token` | string | New JWT access token for API requests |
+| `refresh_token` | string | New JWT refresh token (the old one is invalidated) |
+| `client_id` | string | Your client identifier |
+| `access_token_expires_at` | integer | Unix timestamp when new access token expires |
+| `refresh_token_expires_at` | integer | Unix timestamp when new refresh token expires |
+| `scopes` | array | Your granted permissions (same as original registration) |
+| `token_type` | string | Always "Bearer" |
+
+**Error Responses:**
+
+**400 - Bad Request:**
+
+```json
+{
+  "error": "Refresh token cannot be empty"
+}
+```
+
+**401 - Unauthorized:**
+
+```json
+{
+  "error": "Invalid or expired refresh token"
+}
+```
+
+**503 - Service Unavailable:**
+
+```json
+{
+  "error": "Authentication service is not configured"
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+  }'
+```
+
+**Token Lifecycle:**
+
+1. **Register**: Get initial access + refresh tokens via `/api/auth/register`
+2. **Use Access Token**: Make API calls with the access token in Authorization header
+3. **Refresh**: Before access token expires, use `/api/auth/refresh` to get new tokens
+4. **Repeat**: Continue using the refresh cycle to maintain authentication
+
+**Security Notes:**
+
+- Access tokens are short-lived (typically 1 hour) for security
+- Refresh tokens are long-lived (typically 30 days) but are invalidated after use
+- Store refresh tokens securely and never expose them in client-side code
+- Token expiry times are configured server-side and cannot be modified via API
+
+### Orders
+
+#### Submit Intent Order
+
+**POST** `/api/orders`
+
+Submit cross-chain intent orders for execution. This endpoint accepts both quote acceptance (via `quoteId`) and direct order submission. Orders are forwarded to the configured discovery service for processing.
+
+**Authentication:** Requires `create-orders` scope when JWT authentication is enabled.
+
+**Supported Order Types:** See [Order Types](#order-types).
+
+**Request Body Options:**
+
+**Option 1: Quote Acceptance**
+
+```json
+{
+  "quoteId": "quote_abc123def456",
+  "signature": "0x1234567890abcdef..."
+}
+```
+
+**Option 2: Direct Order Submission**
+
+```json
+{
+  "order": {
+    "type": "oif-escrow-v0",
+    "payload": {
+      "signatureType": "eip712",
+      "domain": {
+        "name": "Permit2",
+        "chainId": "1",
+        "verifyingContract": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+      },
+      "primaryType": "PermitBatchWitnessTransferFrom",
+      "message": {
+        "permitted": [
+          {
+            "token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+            "amount": "1000000"
+          }
+        ],
+        "spender": "0x1234567890abcdef1234567890abcdef12345678",
+        "nonce": "123456",
+        "deadline": "1700000000",
+        "witness": {
+          "outputs": [
+            {
+              "chainId": "42161",
+              "token": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+              "amount": "990000",
+              "recipient": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "signature": "0x1234567890abcdef...",
+  "originSubmission": {
+    "mode": "user",
+    "schemes": ["permit2"]
+  }
+}
+```
+
+**Parameters:**
+
+**For Quote Acceptance:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `quoteId` | string | Yes | Quote identifier from a previously generated quote |
+| `signature` | string | Yes | Hex-encoded signature bytes |
+
+**For Direct Submission:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `order` | object | Yes | Complete order structure (see [Order Object Properties](#order-object-properties)) |
+| `signature` | string | Yes | Hex-encoded signature bytes |
+| `originSubmission` | object | No | Origin submission mode and schemes information (see [Origin Submission Object Properties](#origin-submission-object-properties)) |
+
+**Response:**
+
+**Success (200):**
+
+```json
+{
+  "orderId": "1fa518079ecf01372290adf75c55858771efcbcee080594cc8bc24e3309a3a09",
+  "status": "received",
+  "message": null,
+  "order": null
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `orderId` | string | Unique identifier for the submitted order (nullable) |
+| `status` | string | Submission status (`"received"`, `"rejected"`, `"error"`) |
+| `message` | string | Optional message providing additional context (nullable) |
+| `order` | object | Optional echo of the submitted order for confirmation (nullable) (see [Order Object Properties](#order-object-properties)) |
+
+**Error Responses:**
+
+**400 - Invalid Order:**
+
+```json
+{
+  "orderId": null,
+  "status": "error",
+  "message": "Order validation failed: invalid signature",
+  "order": null
+}
+```
+
+**401 - Unauthorized:**
+
+```json
+{
+  "error": "UNAUTHORIZED",
+  "message": "Missing or invalid authentication token"
+}
+```
+
+**403 - Forbidden:**
+
+```json
+{
+  "error": "FORBIDDEN",
+  "message": "Insufficient permissions: create-orders scope required"
+}
+```
+
+**503 - Service Not Configured:**
+
+```json
+{
+  "orderId": null,
+  "status": "error",
+  "message": "Intent submission service not configured",
+  "order": null
+}
+```
+
+**502 - Gateway Error:**
+
+```json
+{
+  "orderId": null,
+  "status": "error",
+  "message": "Failed to submit intent: connection timeout",
+  "order": null
+}
+```
+
+**Examples:**
+
+**Quote Acceptance:**
+
+```bash
+curl -X POST http://localhost:3000/api/orders \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "quoteId": "quote_abc123def456",
+    "signature": "0x1234567890abcdef..."
+  }'
+```
+
+**Direct Order Submission:**
+
+```bash
+curl -X POST http://localhost:3000/api/orders \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order": {
+      "type": "oif-escrow-v0",
+      "payload": {
+        "signatureType": "eip712",
+        "domain": {
+          "name": "Permit2",
+          "chainId": "1",
+          "verifyingContract": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
+        },
+        "primaryType": "PermitBatchWitnessTransferFrom",
+        "message": {...}
+      }
+    },
+    "signature": "0x1234567890abcdef...",
+    "originSubmission": {
+      "mode": "user",
+      "schemes": ["permit2"]
+    }
+  }'
+```
+
+**Note:** Order submission requires the `offchain_eip7683` discovery source to be configured in the solver settings.
+
+**Configuration:** The discovery source must be configured in your solver configuration file. This tells the solver where to forward submitted orders for execution.
+
+Example configuration in your main config file (e.g., `config.toml`):
+
+```toml
+[api.implementations]
+discovery = "offchain_eip7683"
+
+[discovery.implementations.offchain_eip7683]
+api_host = "127.0.0.1"
+api_port = 8081
+network_ids = [1, 2]  # Supported network IDs
+```
+
+Without this configuration, the `/api/orders` endpoint will return a `503 Service Unavailable` error with the message "Intent submission service not configured".
+
+#### Get Order Status
+
+**GET** `/api/orders/{id}`
+
+Retrieve the current status and details of a submitted order. Use this endpoint to track the progress of intent orders through their lifecycle.
+
+**Authentication:** Requires `read-orders` scope when JWT authentication is enabled.
+
+**Parameters:**
+
+- `id` (path parameter): Unique identifier of the order
+
+**Response:**
+
+**Success (200):**
+
+```json
+{
+  "order": {
+    "id": "abc123def456",
+    "status": "executed",
+    "createdAt": 1699900000,
+    "updatedAt": 1699900120,
+    "quoteId": "quote_xyz789",
+    "inputAmount": {
+      "asset": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "amount": "1000000"
+    },
+    "outputAmount": {
+      "asset": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "amount": "990000"
+    },
+    "settlement": {
+      "type": "escrow",
+      "data": {
+        "raw_order_data": {
+          "user": "0x0100000101014742d35cc6634c0532925a3b844bc9e7595f0beb1",
+          "nonce": "12345"
+        },
+        "signature": "0x1234567890abcdef...",
+        "expires": 1700000000
+      }
+    },
+    "fillTransaction": {
+      "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "status": "executed",
+      "timestamp": 1699900100
+    }
+  }
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `order` | object | Detailed information about the order (see [Order Status Object Properties](#order-status-object-properties)) |
+
+<a id="order-status-object-properties"></a>
+**Order Status Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | string | Unique identifier for this order |
+| `status` | string | Current order status (see below) |
+| `createdAt` | integer | Unix timestamp when order was created |
+| `updatedAt` | integer | Unix timestamp when order was last updated |
+| `quoteId` | string | Associated quote ID if created from a quote (nullable) |
+| `inputAmount` | object | Input asset and amount (see [Input/Output Amount Object Properties](#inputoutput-amount-object-properties)) |
+| `outputAmount` | object | Output asset and amount (see [Input/Output Amount Object Properties](#inputoutput-amount-object-properties)) |
+| `settlement` | object | Settlement mechanism information (see [Settlement Object Properties](#settlement-object-properties)) |
+| `fillTransaction` | object | Transaction details if executed (nullable) (see [Fill Transaction Object Properties](#fill-transaction-object-properties)) |
+
+<a id="inputoutput-amount-object-properties"></a>
+**Input/Output Amount Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `asset` | string | Asset address |
+| `amount` | string | Amount as decimal string |
+
+<a id="settlement-object-properties"></a>
+**Settlement Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `type` | string | Settlement type (`"escrow"`, `"resourcelock"`) |
+| `data` | object | Settlement-specific data |
+
+<a id="fill-transaction-object-properties"></a>
+**Fill Transaction Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `hash` | string | Transaction hash |
+| `status` | string | Transaction status (`"pending"`, `"executed"`, `"failed"`) |
+| `timestamp` | integer | Unix timestamp of the transaction |
+
+**Order Status Values:**
+
+- `created`: Order has been created but not yet prepared
+- `pending`: Order is pending execution
+- `executed`: Order has been executed on-chain
+- `settled`: Order has been settled and is ready to be claimed
+- `finalized`: Order is complete (after claim confirmation)
+- `failed`: Order execution failed
+
+**Error Responses:**
+
+**404 - Not Found:**
+
+```json
+{
+  "error": "NotFound",
+  "message": "Order not found: abc123def456"
+}
+```
+
+**Example:**
+
+```bash
+curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  http://localhost:3000/api/orders/abc123def456
+```
+
+### Tokens
+
+#### Get All Supported Tokens
+
+**GET** `/api/tokens`
+
+Retrieve all supported tokens across all configured networks. This endpoint provides a comprehensive view of the solver's capabilities, showing which tokens can be used for intents on each supported blockchain.
+
+**Response:**
+
+```json
+{
+  "networks": {
+    "1": {
+      "chain_id": 1,
+      "input_settler": "0x1234567890abcdef1234567890abcdef12345678",
+      "output_settler": "0xabcdef1234567890abcdef1234567890abcdef12",
+      "tokens": [
+        {
+          "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "symbol": "USDC",
+          "decimals": 6
+        },
+        {
+          "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+          "symbol": "USDT",
+          "decimals": 6
+        }
+      ]
+    },
+    "42161": {
+      "chain_id": 42161,
+      "input_settler": "0x9876543210fedcba9876543210fedcba98765432",
+      "output_settler": "0xfedcba9876543210fedcba9876543210fedcba98",
+      "tokens": [
+        {
+          "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+          "symbol": "USDC",
+          "decimals": 6
+        }
+      ]
+    }
+  }
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `networks` | object | Map of chain ID (as string) to network token information (see [Network Object Properties](#network-object-properties)) |
+
+<a id="network-object-properties"></a>
+**Network Object Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `chain_id` | integer | The blockchain network ID |
+| `input_settler` | string | Input settler contract address for this network |
+| `output_settler` | string | Output settler contract address for this network |
+| `tokens` | array | List of supported tokens on this network (see [Token Object Properties](#token-object-properties)) |
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/tokens
+```
+
+#### Get Tokens for Specific Chain
+
+**GET** `/api/tokens/{chain_id}`
+
+Retrieve supported tokens for a specific blockchain network. Use this endpoint to check if the solver supports a particular chain and which tokens are available for intents on that chain.
+
+**Parameters:**
+
+- `chain_id` (path parameter): The blockchain network ID (e.g., 1 for Ethereum mainnet, 42161 for Arbitrum)
+
+**Response:**
+
+**Success (200):**
+
+```json
+{
+  "chain_id": 1,
+  "input_settler": "0x1234567890abcdef1234567890abcdef12345678",
+  "output_settler": "0xabcdef1234567890abcdef1234567890abcdef12",
+  "tokens": [
+    {
+      "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "symbol": "USDC",
+      "decimals": 6
+    },
+    {
+      "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+      "symbol": "USDT",
+      "decimals": 6
+    }
+  ]
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `chain_id` | integer | The blockchain network ID |
+| `input_settler` | string | Input settler contract address for this network |
+| `output_settler` | string | Output settler contract address for this network |
+| `tokens` | array | List of supported tokens on this network (see [Token Object Properties](#token-object-properties)) |
+
+**Error Responses:**
+
+**404 - Chain Not Supported:**
+
+```json
+{
+  "error": "Chain ID 999 is not supported"
+}
+```
+
+**Example:**
+
+```bash
+# Get tokens for Ethereum Mainnet
+curl http://localhost:3000/api/tokens/1
+
+# Get tokens for Arbitrum
+curl http://localhost:3000/api/tokens/42161
+```
+
+## Common Types
+
+This section defines shared object schemas and enums referenced across endpoints.
+
+<a id="intent-object-properties"></a>
+**Intent Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `intentType` | string | Yes | Type of intent operation (currently `"oif-swap"`) |
+| `inputs` | array | Yes | Input assets from the user (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+| `outputs` | array | Yes | Desired output tokens and destinations (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+| `swapType` | string | Yes | Swap type determining which amounts are fixed (see [Enumeration Values](#enumeration-values)) |
+| `minValidUntil` | integer | No | Minimum Unix timestamp for quote validity |
+| `preference` | string | No | Optimization preference for quote generation (see [Enumeration Values](#enumeration-values)) |
+| `originSubmission` | object | No | Origin transaction submission preferences (see [Origin Submission Object Properties](#origin-submission-object-properties)) |
+| `failureHandling` | array | No | Accepted failure handling modes (see [Enumeration Values](#enumeration-values)) |
+| `partialFill` | boolean | No | Whether partial fills are acceptable |
+| `metadata` | object | No | Additional intent metadata |
+
+<a id="inputoutput-object-properties"></a>
+**Input/Output Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `user`/`receiver` | string | Yes | User/receiver address in ERC-7930 format (hex-encoded) |
+| `asset` | string | Yes | Asset address in ERC-7930 format (hex-encoded) |
+| `amount` | string | Yes* | Amount as a decimal string (*required for exact-input/exact-output) |
+| `lock` | object | No | Reference to existing asset lock (inputs only) (see [Lock Object Properties](#lock-object-properties)) |
+| `calldata` | string | No | Optional calldata for the output (outputs only) |
+
+<a id="lock-object-properties"></a>
+**Lock Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `kind` | string | Yes | Lock mechanism type (see [Enumeration Values](#enumeration-values)) |
+| `params` | object | No | Lock-specific parameters |
+
+<a id="origin-submission-object-properties"></a>
+**Origin Submission Object Properties**
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `mode` | string | Yes | Who submits the origin transaction (see [Enumeration Values](#enumeration-values)) |
+| `schemes` | array | Yes | Supported authentication schemes (see [Enumeration Values](#enumeration-values)) |
+
+<a id="enumeration-values"></a>
+**Enumeration Values**
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `swapType` | `"exact-input"` | Input amounts are exact, outputs are estimates |
+|  | `"exact-output"` | Output amounts are exact, inputs are estimates |
+| `preference` | `"price"` | Optimize for lowest cost |
+|  | `"speed"` | Optimize for fastest execution |
+|  | `"input-priority"` | Prioritize specific input tokens (order significant) |
+|  | `"trust-minimization"` | Maximum trust minimization |
+| `originSubmission.mode` | `"user"` | User submits the origin transaction |
+|  | `"protocol"` | Protocol submits the origin transaction |
+| `originSubmission.schemes` | `"erc4337"` | ERC-4337 account abstraction |
+|  | `"permit2"` | Permit2 signature-based approvals |
+|  | `"erc20-permit"` | ERC-2612 permit function |
+|  | `"eip3009"` | EIP-3009 transfer authorization |
+| `failureHandling` | `"refund-automatic"` | Automatic refund on failure |
+|  | `"refund-claim"` | Manual refund claim required |
+|  | `"needs-new-signature"` | New signature required on failure |
+| `supportedTypes` | `"oif-escrow-v0"` | Permit2-based escrow orders |
+|  | `"oif-resource-lock-v0"` | TheCompact resource lock orders |
+|  | `"oif-3009-v0"` | EIP-3009 gasless transfer orders |
+
+<a id="order-types"></a>
+**Order Types**
+
+- `oif-escrow-v0`: Permit2-based escrow orders using `PermitBatchWitnessTransferFrom`
+- `oif-resource-lock-v0`: TheCompact resource lock orders using `BatchCompact`
+- `oif-3009-v0`: EIP-3009 gasless transfer orders
+
+<a id="order-object-properties"></a>
+**Order Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `type` | string | Order type (`"oif-escrow-v0"`, `"oif-resource-lock-v0"`, `"oif-3009-v0"`) |
+| `payload` | object | EIP-712 compliant order payload (see [Payload Object Properties](#payload-object-properties)) |
+| `metadata` | object | Additional metadata (for `oif-3009-v0` orders) (optional) |
+
+<a id="payload-object-properties"></a>
+**Payload Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `signatureType` | string | Signature standard (currently `"eip712"`) |
+| `domain` | object | EIP-712 domain separator |
+| `primaryType` | string | Primary type for EIP-712 signing |
+| `message` | object | Message object to be signed |
+| `types` | object | EIP-712 type definitions (may be inferred) (optional) |
+
+<a id="preview-object-properties"></a>
+**Preview Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `inputs` | array | Array of input preview items (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+| `outputs` | array | Array of output preview items (see [Input/Output Object Properties](#inputoutput-object-properties)) |
+
+
+
+<a id="token-object-properties"></a>
+**Token Object Properties**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `address` | string | Token contract address |
+| `symbol` | string | Token symbol (e.g., "USDC", "USDT") |
+| `decimals` | integer | Number of decimal places for the token |
+
+## API Configuration
+
+Enable or configure the API server in your configuration file:
+
+```toml
+[api]
+enabled = true              # Enable/disable API server
+host = "127.0.0.1"         # Host to bind to (use "0.0.0.0" to accept external connections)
+port = 3000                # Port to listen on
+timeout_seconds = 30       # Request timeout
+max_request_size = 1048576 # Maximum request size (1MB)
+
+# Optional JWT authentication
+[api.auth]
+enabled = false            # Enable JWT authentication (defaults to false)
+issuer = "oif-solver"      # JWT issuer name
+jwt_secret = "your-secret-key-token"  # JWT secret for token validation
+
+# Optional quote settings
+[api.quote]
+validity_seconds = 300     # Quote validity period (5 minutes)
+```

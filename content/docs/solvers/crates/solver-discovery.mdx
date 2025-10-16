@@ -1,0 +1,1124 @@
+---
+title: solver-discovery
+description: Intent ingestion layer for discovering cross-chain orders from multiple sources
+---
+
+## Overview
+
+The `solver-discovery` crate is the intent ingestion layer for the OIF Solver. It discovers EIP-7683 cross-chain orders from multiple sources—blockchain events, HTTP APIs, or custom channels—and normalizes them into a unified `Intent` format for the solver engine to process.
+
+### Core Responsibilities
+
+1. **Find new cross-chain orders** from various channels (on-chain events, HTTP API, custom sources)
+2. **Support multiple discovery sources simultaneously** with parallel monitoring
+3. **Validate incoming orders early** to reject invalid submissions before processing
+4. **Convert diverse order formats** into standardized internal representation
+5. **Stream discovered intents** to the solver engine without blocking using async channels
+
+### Architecture
+
+The crate provides a trait-based discovery system with pluggable implementations:
+
+```
+Discovery Sources → DiscoveryInterface → Intent Channel → Solver Engine
+```
+
+All implementations satisfy the `DiscoveryInterface` trait and send discovered intents through a shared `mpsc::UnboundedSender<Intent>` channel. The solver engine receives intents from the channel's receiver end.
+
+### Module Position in System
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              Discovery Layer                            │
+│  ┌──────────────┐            ┌──────────────┐           │
+│  │  On-Chain    │            │  Off-Chain   │           │
+│  │  (Events)    │            │  (HTTP API)  │           │
+│  └──────┬───────┘            └──────┬───────┘           │
+│         │                           │                   │
+│         └───────────┬───────────────┘                   │
+│                     │                                   │
+│                     ▼                                   │
+│          ┌─────────────────────┐                        │
+│          │  Intent Channel     │                        │
+│          │  (mpsc::unbounded)  │                        │
+│          └─────────┬───────────┘                        │
+└──────────────────────┼──────────────────────────────────┘
+                       │
+                       ▼
+           ┌──────────────────────┐
+           │   Solver Core        │
+           │   (solver-core)      │
+           └──────────────────────┘
+```
+
+### Integration Context
+
+
+- **solver-core**: Receives intents via channel for processing and profitability analysis
+- **solver-service**: May expose discovery API endpoints for monitoring
+- **Configuration system**: Loads and validates discovery settings
+
+---
+
+## Discovery Mechanisms
+
+### 1. On-Chain Discovery (EIP-7683)
+
+Monitors blockchain events for new cross-chain orders emitted by InputSettler contracts.
+
+#### Event Monitoring Flow
+
+```
+Blockchain → RPC Provider → Event Filter → Parse Event → Create Intent → Send to Channel
+```
+
+The implementation monitors the `Open` event:
+
+```solidity
+event Open(bytes32 indexed orderId, StandardOrder order);
+```
+
+#### Operating Modes
+
+**Polling Mode** (`polling_interval_secs > 0`)
+
+Queries blockchain at regular intervals:
+
+```
+Every N seconds:
+1. Query current block number
+2. Get logs from last_block to current_block
+3. Filter by: settler address + Open event signature
+4. Parse each log into Intent
+5. Update last_block checkpoint
+```
+
+Default interval: 3 seconds
+
+**WebSocket Mode** (`polling_interval_secs = 0`)
+
+Subscribes to real-time events:
+
+```
+On startup:
+1. Open WebSocket connection to RPC
+2. Subscribe to logs (eth_subscribe)
+3. Receive events in real-time as they're mined
+4. Parse each log into Intent
+```
+
+Latency: 1-2 seconds from block production
+
+#### Configuration
+
+```toml
+[discovery.implementations.onchain_eip7683]
+network_ids = [1, 10, 137, 8453]  # Chains to monitor
+polling_interval_secs = 3          # 0 = WebSocket, >0 = polling interval
+```
+
+**Configuration Rules:**
+
+- `network_ids`: Required, array of u64 chain IDs
+- `polling_interval_secs`: Optional, default 3, range [0, 300]
+- All networks must exist in `[networks]` configuration
+- Each network needs `input_settler_address` defined
+
+#### Mode Selection
+
+| Mode | Use Case | Pros | Cons |
+|------|----------|------|------|
+| **Polling** | Unreliable RPC, rate-limited providers | Stateless, self-healing | Higher latency (3s default), more RPC calls |
+| **WebSocket** | Production with stable RPC (Infura, Alchemy) | Real-time (1-2s), minimal RPC load | Connection can drop, requires reconnection logic |
+
+#### Implementation Details
+
+Polling mode implementation per chain:
+
+```rust
+async fn monitor_chain_polling(
+    provider: DynProvider,
+    chain_id: u64,
+    last_blocks: Arc<Mutex<HashMap<u64, u64>>>,
+    sender: mpsc::UnboundedSender<Intent>,
+    stop_rx: broadcast::Receiver<()>,
+) {
+    loop {
+        // Get last processed block
+        let last_block = last_blocks.lock().await.get(&chain_id).copied().unwrap_or(0);
+
+        // Get current block
+        let current_block = provider.get_block_number().await?;
+
+        if current_block > last_block {
+            // Query logs for new blocks
+            let filter = Filter::new()
+                .address(settler_address)
+                .event_signature(Open::SIGNATURE_HASH)
+                .from_block(last_block + 1)
+                .to_block(current_block);
+
+            let logs = provider.get_logs(&filter).await?;
+
+            // Parse and send intents
+            for log in logs {
+                if let Ok(intent) = parse_open_event(&log) {
+                    sender.send(intent)?;
+                }
+            }
+
+            // Update checkpoint
+            last_blocks.lock().await.insert(chain_id, current_block);
+        }
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+```
+
+#### Multi-Chain Monitoring
+
+Each chain monitored in separate task:
+
+```rust
+async fn start_monitoring(&self, sender: mpsc::UnboundedSender<Intent>)
+    -> Result<(), DiscoveryError>
+{
+    for &chain_id in &self.network_ids {
+        let provider = self.providers.get(&chain_id)?;
+        let sender_clone = sender.clone();
+
+        tokio::spawn(async move {
+            monitor_chain_polling(
+                provider.clone(),
+                chain_id,
+                last_blocks.clone(),
+                sender_clone,
+                stop_signal.subscribe(),
+            ).await;
+        });
+    }
+
+    Ok(())
+}
+```
+
+### 2. Off-Chain Discovery (HTTP API)
+
+Accepts EIP-7683 orders submitted directly via HTTP endpoint.
+
+#### Request Flow
+
+```
+Client → POST /intent → Validate → Compute Order ID → Create Intent → Send to Channel → Response
+```
+
+#### Design Rationale
+
+The HTTP API is exposed directly from the discovery module rather than solver-service because:
+
+- **Discovery is the entry point** for ALL intents (on-chain and off-chain)
+- **Single responsibility**: Discovery handles intent ingestion, solver-service handles orchestration
+- **Extensibility**: Provides pattern for custom discovery implementations
+- **Independence**: Can deploy/scale discovery API separately
+
+#### API Endpoint
+
+**POST /intent**
+
+Request:
+
+```json
+{
+  "order": {
+    "orderDataType": "0x1234...",  // EIP-712 type hash
+    "orderData": "0xabcd..."       // ABI-encoded order
+  },
+  "signature": "0xsig...",          // EIP-712 signature
+  "quoteId": "quote-123",           // Optional quote reference
+  "originSubmission": null
+}
+```
+
+Response (202 Accepted):
+
+```json
+{
+  "orderId": "0x789...",
+  "status": "received",
+  "message": "Basic validation passed, pending profitability validation",
+  "order": {
+    "user": "0x...",
+    "nonce": "123",
+    "originChainId": "1",
+    ...
+  }
+}
+```
+
+Response (400 Bad Request):
+
+```json
+{
+  "orderId": null,
+  "status": "rejected",
+  "message": "Failed to extract sponsor: Invalid signature",
+  "order": null
+}
+```
+
+#### Configuration
+
+```toml
+[discovery.implementations.offchain_eip7683]
+api_host = "0.0.0.0"              # Bind address
+api_port = 8081                    # Port to listen on
+network_ids = [1, 10, 137, 8453]  # Supported networks
+```
+
+**Configuration Rules:**
+
+- `api_host`: Required, string (e.g., "0.0.0.0", "127.0.0.1")
+- `api_port`: Required, integer 1-65535
+- `network_ids`: Required, array of supported chain IDs
+
+#### Request Processing
+
+```rust
+async fn handle_intent_submission(
+    State(state): State<ApiState>,
+    Json(request): Json<PostOrderRequest>,
+) -> impl IntoResponse {
+    // 1. Convert OifOrder to StandardOrder
+    let order = StandardOrder::try_from(&request.order)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid order: {}", e)))?;
+
+    // 2. Extract sponsor from signature
+    let sponsor = request.order.extract_sponsor(Some(&request.signature))
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid sponsor: {}", e)))?;
+
+    // 3. Derive lock type from order structure
+    let lock_type = LockType::from(&request.order);
+
+    // 4. Compute order ID via contract call
+    let order_id = compute_order_id(&order, &state.providers, lock_type).await?;
+
+    // 5. Create Intent
+    let intent = order_to_intent(
+        &order,
+        &sponsor,
+        &request.signature,
+        lock_type,
+        &state.providers,
+        request.quote_id,
+    ).await?;
+
+    // 6. Send to solver
+    state.intent_sender.send(intent)?;
+
+    // 7. Return response
+    (StatusCode::ACCEPTED, Json(IntentResponse {
+        order_id: Some(hex::encode(order_id)),
+        status: IntentResponseStatus::Received,
+        message: Some("Intent queued for processing"),
+        order: Some(serialize_order(&order)),
+    }))
+}
+```
+
+#### Order ID Computation
+
+Order ID must match on-chain computation exactly. The implementation calls the settler contract to compute it:
+
+```rust
+async fn compute_order_id(
+    order: &StandardOrder,
+    provider: &DynProvider,
+    settler_address: Address,
+    lock_type: LockType,
+) -> Result<[u8; 32], DiscoveryError> {
+    match lock_type {
+        LockType::ResourceLock => {
+            // Use IInputSettlerCompact interface
+            let contract = IInputSettlerCompact::new(settler_address, provider);
+            let response = contract.orderIdentifier(order.clone()).call().await?;
+            Ok(response.0)
+        }
+        LockType::Permit2Escrow | LockType::Eip3009Escrow => {
+            // Use IInputSettlerEscrow interface
+            let contract = IInputSettlerEscrow::new(settler_address, provider);
+            let response = contract.orderIdentifier(order.clone()).call().await?;
+            Ok(response.0)
+        }
+    }
+}
+```
+
+**Rationale for contract call approach:**
+
+- **Correctness**: Guaranteed to match on-chain computation
+- **Maintainability**: No duplicate logic to keep in sync
+- **Version agnostic**: If settler contract changes, solver adapts automatically
+
+**Trade-offs:**
+
+- Adds 50-200ms RPC latency per submission
+- Requires working RPC provider for order acceptance
+- Consumes RPC quota (read-only call, no gas cost)
+
+#### Server Lifecycle
+
+```rust
+impl Eip7683OffchainDiscovery {
+    async fn start_monitoring(&self, sender: mpsc::UnboundedSender<Intent>)
+        -> Result<(), DiscoveryError>
+    {
+        // Create Axum router
+        let app = Router::new()
+            .route("/intent", post(handle_intent_submission))
+            .layer(CorsLayer::permissive())
+            .with_state(ApiState {
+                intent_sender: sender,
+                providers: self.providers.clone(),
+                networks: self.networks.clone(),
+            });
+
+        // Bind and serve
+        let addr = format!("{}:{}", self.api_host, self.api_port);
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+        tracing::info!("Discovery API listening on {}", addr);
+
+        // Spawn server task
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown_signal)
+                .await
+        });
+
+        Ok(())
+    }
+}
+```
+
+---
+
+## Integration Architecture
+
+### DiscoveryInterface Trait
+
+Core abstraction all discovery implementations must satisfy:
+
+```rust
+#[async_trait]
+pub trait DiscoveryInterface: Send + Sync {
+    /// Return configuration validation schema
+    fn config_schema(&self) -> Box<dyn ConfigSchema>;
+
+    /// Start discovering intents and send to channel
+    async fn start_monitoring(
+        &self,
+        sender: mpsc::UnboundedSender<Intent>,
+    ) -> Result<(), DiscoveryError>;
+
+    /// Stop monitoring and cleanup resources
+    async fn stop_monitoring(&self) -> Result<(), DiscoveryError>;
+
+    /// Return API URL if this implementation provides one
+    fn get_url(&self) -> Option<String> {
+        None  // Default: no URL
+    }
+}
+```
+
+#### Method Contracts
+
+**`config_schema()`**
+
+- Called before instantiation to validate TOML config
+- Returns schema defining required/optional fields with types and ranges
+- Enables fail-fast validation with specific error messages
+
+**`start_monitoring(sender)`**
+
+- Begins discovery process (spawns async tasks, starts server, etc.)
+- All discovered intents sent via `sender` channel
+- Returns error if already monitoring
+- Should not block (spawn tasks instead)
+
+**`stop_monitoring()`**
+
+- Gracefully shuts down discovery process
+- Waits for in-flight operations to complete
+- Closes connections, stops tasks
+- Idempotent (safe to call multiple times)
+
+**`get_url()`**
+
+- Returns API endpoint if implementation exposes one
+- Used for health checks and service discovery
+- On-chain implementations return `None`
+- Off-chain returns `"host:port"`
+
+### DiscoveryService
+
+Facade that manages multiple discovery implementations:
+
+```rust
+pub struct DiscoveryService {
+    implementations: HashMap<String, Box<dyn DiscoveryInterface>>,
+}
+
+impl DiscoveryService {
+    pub fn new(implementations: HashMap<String, Box<dyn DiscoveryInterface>>) -> Self {
+        Self { implementations }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&dyn DiscoveryInterface> {
+        self.implementations.get(name).map(|b| b.as_ref())
+    }
+
+    pub async fn start_all(&self, sender: mpsc::UnboundedSender<Intent>)
+        -> Result<(), DiscoveryError>
+    {
+        for impl_ in self.implementations.values() {
+            impl_.start_monitoring(sender.clone()).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn stop_all(&self) -> Result<(), DiscoveryError> {
+        for impl_ in self.implementations.values() {
+            impl_.stop_monitoring().await?;
+        }
+        Ok(())
+    }
+}
+```
+
+**Key characteristics:**
+
+- Single intent channel for all sources
+- Parallel monitoring (each implementation runs independently)
+- Fail-fast on startup (if any implementation fails to start, none run)
+- Graceful shutdown (all implementations stopped)
+
+### Factory Pattern
+
+Discovery implementations register via factory functions:
+
+```rust
+pub type DiscoveryFactory =
+    fn(&toml::Value, &NetworksConfig) -> Result<Box<dyn DiscoveryInterface>, DiscoveryError>;
+
+pub fn get_all_implementations() -> Vec<(&'static str, DiscoveryFactory)> {
+    vec![
+        ("onchain_eip7683", onchain::_7683::create_discovery),
+        ("offchain_eip7683", offchain::_7683::create_discovery),
+    ]
+}
+
+fn create_discovery(
+    config: &toml::Value,
+    networks: &NetworksConfig,
+) -> Result<Box<dyn DiscoveryInterface>, DiscoveryError> {
+    // 1. Validate config against schema
+    validate_config(config)?;
+
+    // 2. Extract configuration values
+    let network_ids = config.get("network_ids")?.as_array()?;
+
+    // 3. Create implementation instance
+    let discovery = MyDiscovery::new(network_ids, networks)?;
+
+    // 4. Return boxed trait object
+    Ok(Box::new(discovery))
+}
+```
+
+### Integration Example
+
+Complete example of using discovery in solver:
+
+```rust
+use solver_discovery::{DiscoveryService, get_all_implementations};
+use solver_types::{Intent, NetworksConfig};
+use tokio::sync::mpsc;
+
+async fn setup_discovery(config: &Config) -> Result<DiscoveryService> {
+    // 1. Create intent channel
+    let (intent_tx, mut intent_rx) = mpsc::unbounded_channel::<Intent>();
+
+    // 2. Build factory registry
+    let factories: HashMap<String, DiscoveryFactory> =
+        get_all_implementations().into_iter().collect();
+
+    // 3. Instantiate configured implementations
+    let mut implementations = HashMap::new();
+
+    for (name, impl_config) in &config.discovery.implementations {
+        let factory = factories.get(name)
+            .ok_or(format!("Unknown discovery implementation: {}", name))?;
+
+        let implementation = factory(impl_config, &config.networks)?;
+        implementations.insert(name.clone(), implementation);
+    }
+
+    // 4. Create service
+    let service = DiscoveryService::new(implementations);
+
+    // 5. Start monitoring
+    service.start_all(intent_tx).await?;
+
+    // 6. Spawn intent processor
+    tokio::spawn(async move {
+        while let Some(intent) = intent_rx.recv().await {
+            if let Err(e) = process_intent(intent).await {
+                tracing::error!("Failed to process intent: {}", e);
+            }
+        }
+    });
+
+    Ok(service)
+}
+
+async fn process_intent(intent: Intent) -> Result<()> {
+    tracing::info!("Received intent: {} from {}", intent.id, intent.source);
+
+    // Validate intent
+    validate_intent(&intent)?;
+
+    // Send to solver engine
+    solver_engine.submit_intent(intent).await?;
+
+    Ok(())
+}
+
+async fn shutdown(service: DiscoveryService) -> Result<()> {
+    service.stop_all().await?;
+    // Intent channel closes automatically when all senders dropped
+    Ok(())
+}
+```
+
+---
+
+## Protocol Specifications
+
+### Intent Data Structure
+
+Discovery implementations convert discovered orders into this standardized format:
+
+```rust
+pub struct Intent {
+    pub id: String,                      // Unique identifier (order ID as hex)
+    pub source: String,                  // Discovery source ("on-chain" or "off-chain")
+    pub standard: String,                // Standard name ("eip7683")
+    pub metadata: IntentMetadata,        // Discovery metadata
+    pub data: serde_json::Value,         // Order data as JSON
+    pub order_bytes: Bytes,              // Raw ABI-encoded order bytes
+    pub quote_id: Option<String>,        // Optional quote ID for auction-based orders
+    pub lock_type: String,               // Lock type ("permit2-escrow", "resource-lock", etc.)
+}
+```
+
+#### Field Usage
+
+| Field | Purpose | Set By | Used By |
+|-------|---------|--------|---------|
+| `id` | Unique order identifier | Discovery | Storage (deduplication), API (status queries) |
+| `source` | Track origin | Discovery | Monitoring, debugging |
+| `standard` | Order format version | Discovery | Order implementation selection |
+| `metadata.requires_auction` | Auction flag | Discovery | Solver engine (routing) |
+| `metadata.discovered_at` | Timestamp | Discovery | Monitoring (latency tracking) |
+| `data` | Parsed order | Discovery | Order implementation (validation) |
+| `order_bytes` | Raw order | Discovery | Settlement (on-chain submission) |
+| `quote_id` | Quote reference | Off-chain discovery | Auction mechanism |
+| `lock_type` | Custody mechanism | Discovery | Settlement implementation selection |
+
+### EIP-7683 Order Format
+
+Both discovery implementations process EIP-7683 StandardOrder:
+
+```rust
+pub struct StandardOrder {
+    pub user: Address,                   // User who created the order
+    pub nonce: U256,                     // Unique nonce for replay protection
+    pub originChainId: U256,             // Chain ID where order originates
+    pub expires: u32,                    // Expiration timestamp
+    pub fillDeadline: u32,               // Fill deadline (order must be filled before)
+    pub inputOracle: Address,            // Oracle for validating fills
+    pub inputs: Vec<[U256; 2]>,          // Input tokens: [[token, amount], ...]
+    pub outputs: Vec<MandateOutput>,     // Cross-chain outputs
+}
+
+pub struct MandateOutput {
+    pub oracle: [u8; 32],                // Oracle for destination chain
+    pub settler: [u8; 32],               // Settler contract on destination chain
+    pub chain_id: U256,                  // Destination chain ID
+    pub token: [u8; 32],                 // Output token address
+    pub amount: U256,                    // Output amount
+    pub recipient: [u8; 32],             // Recipient address
+    pub call: Vec<u8>,                   // Optional contract call data
+    pub context: Vec<u8>,                // Additional context data
+}
+```
+
+**Validation Rules:**
+
+- Order must have at least one output
+- `fillDeadline` must be before `expires`
+- All chain IDs must be in solver's network configuration
+- Token addresses must be known to solver
+
+### Lock Types
+
+Discovery determines custody mechanism from order structure:
+
+```rust
+pub enum LockType {
+    Permit2Escrow,      // Permit2-based escrow (most common)
+    Eip3009Escrow,      // EIP-3009 transferWithAuthorization escrow
+    ResourceLock,       // TheCompact resource lock
+}
+
+impl From<&OifOrder> for LockType {
+    fn from(order: &OifOrder) -> Self {
+        match order {
+            OifOrder::Permit2Escrow { .. } => LockType::Permit2Escrow,
+            OifOrder::Eip3009Escrow { .. } => LockType::Eip3009Escrow,
+            OifOrder::ResourceLock { .. } => LockType::ResourceLock,
+            OifOrder::OifGenericV0 { .. } => {
+                derive_lock_type_from_type_hash(order)
+            }
+        }
+    }
+}
+```
+
+**Lock type significance:**
+
+- Determines which settler contract to use
+- Affects order ID computation logic
+- Routes to appropriate settlement implementation
+- Impacts gas estimation
+
+### Error Types
+
+```rust
+#[derive(Debug, Error)]
+pub enum DiscoveryError {
+    #[error("Connection error: {0}")]
+    Connection(String),          // RPC connection failures, network errors
+
+    #[error("Already monitoring")]
+    AlreadyMonitoring,           // Attempted to start already-running discovery
+
+    #[error("Parse error: {0}")]
+    ParseError(String),          // Failed to decode event data or order
+
+    #[error("Validation error: {0}")]
+    ValidationError(String),     // Invalid configuration or order validation failed
+}
+```
+
+#### Error Handling Strategy
+
+| Error Type | On-Chain Behavior | Off-Chain Behavior |
+|------------|-------------------|--------------------|
+| Connection | Log and continue polling | Return 500 to client |
+| ParseError | Silently skip invalid event | Return 400 with details |
+| ValidationError | Fail fast at startup | Return 400 with details |
+| AlreadyMonitoring | Return error immediately | Return error immediately |
+
+---
+
+## Custom Discovery Implementation
+
+### Implementation Guide
+
+Example: webhook-based discovery that receives orders via HTTP POST.
+
+#### Step 1: Define Implementation Structure
+
+```rust
+use solver_discovery::{DiscoveryInterface, DiscoveryError};
+use tokio::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub struct WebhookDiscovery {
+    port: u16,
+    secret: String,
+    networks: NetworksConfig,
+    is_running: Arc<AtomicBool>,
+    shutdown_tx: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+}
+```
+
+#### Step 2: Implement DiscoveryInterface
+
+```rust
+#[async_trait]
+impl DiscoveryInterface for WebhookDiscovery {
+    fn config_schema(&self) -> Box<dyn ConfigSchema> {
+        Box::new(WebhookDiscoverySchema)
+    }
+
+    async fn start_monitoring(
+        &self,
+        sender: mpsc::UnboundedSender<Intent>,
+    ) -> Result<(), DiscoveryError> {
+        if self.is_running.load(Ordering::SeqCst) {
+            return Err(DiscoveryError::AlreadyMonitoring);
+        }
+
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        *self.shutdown_tx.lock().await = Some(shutdown_tx);
+
+        let app = Router::new()
+            .route("/webhook", post(handle_webhook))
+            .layer(Extension(WebhookState {
+                secret: self.secret.clone(),
+                sender,
+                networks: self.networks.clone(),
+            }));
+
+        let addr = format!("0.0.0.0:{}", self.port);
+        let listener = tokio::net::TcpListener::bind(&addr).await
+            .map_err(|e| DiscoveryError::Connection(format!("Bind failed: {}", e)))?;
+
+        let is_running = self.is_running.clone();
+        tokio::spawn(async move {
+            is_running.store(true, Ordering::SeqCst);
+
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_rx.recv().await;
+                })
+                .await
+                .ok();
+
+            is_running.store(false, Ordering::SeqCst);
+        });
+
+        tracing::info!("Webhook discovery listening on {}", addr);
+        Ok(())
+    }
+
+    async fn stop_monitoring(&self) -> Result<(), DiscoveryError> {
+        if let Some(tx) = self.shutdown_tx.lock().await.take() {
+            tx.send(()).await.ok();
+        }
+
+        while self.is_running.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        Ok(())
+    }
+
+    fn get_url(&self) -> Option<String> {
+        Some(format!("0.0.0.0:{}", self.port))
+    }
+}
+```
+
+#### Step 3: Define Configuration Schema
+
+```rust
+pub struct WebhookDiscoverySchema;
+
+impl ConfigSchema for WebhookDiscoverySchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        let schema = Schema::new(
+            vec![
+                Field::new("port", FieldType::Integer {
+                    min: Some(1),
+                    max: Some(65535),
+                }),
+                Field::new("webhook_secret", FieldType::String),
+            ],
+            vec![],
+        );
+
+        schema.validate(config)
+    }
+}
+```
+
+#### Step 4: Implement Request Handler
+
+```rust
+#[derive(Clone)]
+struct WebhookState {
+    secret: String,
+    sender: mpsc::UnboundedSender<Intent>,
+    networks: NetworksConfig,
+}
+
+#[derive(Deserialize)]
+struct WebhookRequest {
+    order: StandardOrder,
+    signature: String,
+    timestamp: u64,
+    hmac: String,
+}
+
+async fn handle_webhook(
+    Extension(state): Extension<WebhookState>,
+    Json(request): Json<WebhookRequest>,
+) -> impl IntoResponse {
+    // Verify HMAC
+    if !verify_hmac(&request, &state.secret) {
+        return (StatusCode::UNAUTHORIZED, "Invalid HMAC").into_response();
+    }
+
+    // Check timestamp freshness
+    let now = current_timestamp();
+    if now - request.timestamp > 300 {
+        return (StatusCode::BAD_REQUEST, "Stale request").into_response();
+    }
+
+    // Parse order
+    let order = match parse_order(&request.order) {
+        Ok(o) => o,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid order: {}", e)).into_response(),
+    };
+
+    // Create intent
+    let intent = Intent {
+        id: compute_order_id(&order),
+        source: "webhook".to_string(),
+        standard: "eip7683".to_string(),
+        metadata: IntentMetadata {
+            requires_auction: false,
+            discovered_at: now,
+            exclusive_until: None,
+        },
+        data: serde_json::to_value(&order).unwrap(),
+        order_bytes: order.abi_encode().into(),
+        quote_id: None,
+        lock_type: "permit2-escrow".to_string(),
+    };
+
+    // Send to solver
+    if let Err(e) = state.sender.send(intent) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Send failed: {}", e)).into_response();
+    }
+
+    (StatusCode::ACCEPTED, "Intent received").into_response()
+}
+
+fn verify_hmac(request: &WebhookRequest, secret: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+
+    let payload = format!(
+        "{}:{}:{}",
+        serde_json::to_string(&request.order).unwrap(),
+        request.signature,
+        request.timestamp
+    );
+
+    mac.update(payload.as_bytes());
+    let result = mac.finalize().into_bytes();
+
+    hex::encode(result) == request.hmac
+}
+```
+
+#### Step 5: Create Factory Function
+
+```rust
+pub fn create_webhook_discovery(
+    config: &toml::Value,
+    networks: &NetworksConfig,
+) -> Result<Box<dyn DiscoveryInterface>, DiscoveryError> {
+    WebhookDiscoverySchema.validate(config)
+        .map_err(|e| DiscoveryError::ValidationError(e.to_string()))?;
+
+    let port = config.get("port")
+        .and_then(|v| v.as_integer())
+        .ok_or(DiscoveryError::ValidationError("port required".to_string()))? as u16;
+
+    let secret = config.get("webhook_secret")
+        .and_then(|v| v.as_str())
+        .ok_or(DiscoveryError::ValidationError("webhook_secret required".to_string()))?
+        .to_string();
+
+    let discovery = WebhookDiscovery {
+        port,
+        secret,
+        networks: networks.clone(),
+        is_running: Arc::new(AtomicBool::new(false)),
+        shutdown_tx: Arc::new(Mutex::new(None)),
+    };
+
+    Ok(Box::new(discovery))
+}
+```
+
+#### Step 6: Register Implementation
+
+```rust
+// In src/implementations/webhook.rs
+pub struct Registry;
+
+impl ImplementationRegistry for Registry {
+    const NAME: &'static str = "webhook";
+    type Factory = DiscoveryFactory;
+
+    fn factory() -> Self::Factory {
+        create_webhook_discovery
+    }
+}
+
+impl DiscoveryRegistry for Registry {}
+
+// In src/lib.rs
+pub fn get_all_implementations() -> Vec<(&'static str, DiscoveryFactory)> {
+    vec![
+        (onchain::_7683::Registry::NAME, onchain::_7683::Registry::factory()),
+        (offchain::_7683::Registry::NAME, offchain::_7683::Registry::factory()),
+        (webhook::Registry::NAME, webhook::Registry::factory()),
+    ]
+}
+```
+
+#### Step 7: Configuration
+
+```toml
+[discovery.implementations.webhook]
+port = 8082
+webhook_secret = "${WEBHOOK_SECRET}"
+```
+
+---
+
+## Best Practices
+
+### Running Multiple Discovery Sources
+
+**Combine on-chain and off-chain for maximum coverage:**
+
+```toml
+[discovery.implementations.onchain_eip7683]
+network_ids = [1, 137]
+polling_interval_secs = 0  # WebSocket for low latency
+
+[discovery.implementations.offchain_eip7683]
+api_host = "0.0.0.0"
+api_port = 8081
+network_ids = [1, 137]
+```
+
+Benefits:
+- On-chain: Catch all orders, no missed opportunities
+- Off-chain: Faster for direct submissions, lower latency
+- Redundancy: If API goes down, on-chain still works
+
+### Deduplication Strategy
+
+The solver should deduplicate intents by order ID:
+
+```rust
+async fn process_intent(intent: Intent, seen_orders: Arc<Mutex<HashSet<String>>>) -> Result<()> {
+    let mut seen = seen_orders.lock().await;
+    
+    if seen.contains(&intent.id) {
+        tracing::debug!("Skipping duplicate intent: {}", intent.id);
+        return Ok(());
+    }
+    
+    seen.insert(intent.id.clone());
+    drop(seen);
+    
+    // Process unique intent
+    solver_engine.submit_intent(intent).await?;
+    Ok(())
+}
+```
+
+### Error Handling
+
+**On-chain monitoring should be resilient:**
+
+```rust
+loop {
+    match monitor_chain(&provider, chain_id).await {
+        Ok(_) => break, // Clean shutdown
+        Err(DiscoveryError::Connection(e)) => {
+            tracing::warn!("RPC connection lost on chain {}: {}. Retrying...", chain_id, e);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+        Err(e) => {
+            tracing::error!("Fatal discovery error on chain {}: {}", chain_id, e);
+            return Err(e);
+        }
+    }
+}
+```
+
+### Performance Considerations
+
+**1. RPC Provider Selection:**
+- Use WebSocket for real-time monitoring (Infura, Alchemy)
+- Use polling for rate-limited or unreliable providers
+- Consider provider tier (free vs paid) for monitoring reliability
+
+**2. Block Range Queries:**
+```rust
+// Good: Reasonable range
+let filter = filter.from_block(last_block).to_block(last_block + 100);
+
+// Bad: Too large, may timeout
+let filter = filter.from_block(last_block).to_block(last_block + 10000);
+```
+
+**3. Channel Capacity:**
+- Use unbounded channels for intent streaming
+- Monitor channel size for backpressure
+- If channel grows unbounded, solver is processing too slowly
+
+### Security Considerations
+
+**1. Validate Before Sending:**
+```rust
+// Good: Validate early
+fn parse_open_event(log: &Log) -> Result<Intent, DiscoveryError> {
+    let order = decode_order(log)?;
+    
+    if order.outputs.is_empty() {
+        return Err(DiscoveryError::ValidationError("No outputs"));
+    }
+    
+    if order.expires < current_timestamp() {
+        return Err(DiscoveryError::ValidationError("Expired"));
+    }
+    
+    // Continue...
+}
+```
+
+**2. Rate Limiting for Off-Chain API:**
+```rust
+.layer(
+    ServiceBuilder::new()
+        .layer(RateLimitLayer::new(100, Duration::from_secs(60)))
+        .layer(ConcurrencyLimitLayer::new(50))
+)
+```
+
+---
+
+## Related Documentation
+
+- [solver-core](/docs/solvers/crates/solver-core) - Processes intents received from discovery
+- [solver-types](/docs/solvers/crates/solver-types) - Intent and event type definitions
+- [solver-config](/docs/solvers/crates/solver-config) - Discovery configuration management
+- [solver-order](/docs/solvers/crates/solver-order) - Order validation and processing
+

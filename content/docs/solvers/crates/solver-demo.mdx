@@ -1,0 +1,1555 @@
+---
+title: solver-demo
+description: Command-line testing tool for cross-chain intent execution using the Open Intent Framework
+---
+
+## Overview
+
+The `solver-demo` crate is a command-line interface tool designed for developers who need to test and demonstrate cross-chain intent execution using the Open Intent Framework (OIF) Solver. Rather than being a production tool, it serves as a comprehensive testing harness that allows developers to validate intent resolution workflows, experiment with different settlement mechanisms, and understand the complete lifecycle of cross-chain swaps.
+
+### What It Does
+
+At its core, `solver-demo` orchestrates the entire process of creating, quoting, signing, and executing cross-chain intents. It handles:
+
+- **Local environment management**: Spinning up Anvil-based test chains, deploying contracts, and configuring test tokens
+- **Intent construction**: Building properly formatted intent requests with support for multiple settlement types (Compact, Permit2, EIP-3009)
+- **Quote generation**: Communicating with solver APIs to retrieve price quotes and execution paths
+- **Signature handling**: Multi-scheme EIP-712 signature generation with automatic scheme detection
+- **Order submission**: Managing both off-chain API submissions and on-chain contract interactions
+- **State persistence**: Maintaining session state, contract addresses, and authentication tokens across CLI invocations
+
+### Target Audience
+
+This tool is built for:
+
+- Protocol developers integrating with OIF who need to validate their implementations
+- Solver operators testing quote generation and order execution workflows
+- QA engineers running integration tests across multiple chains
+- Researchers exploring cross-chain intent resolution patterns
+
+### Architecture Overview
+
+The system follows a clean layered architecture:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  CLI Layer (src/bin/solver-demo.rs, src/cli/)           │
+│  - Command parsing with clap                            │
+│  - User input validation                                │
+│  - Output formatting and logging                        │
+└────────────────┬────────────────────────────────────────┘
+                 │
+┌────────────────▼────────────────────────────────────────┐
+│  Operations Layer (src/operations/)                     │
+│  - IntentOps: Intent building & submission              │
+│  - QuoteOps: Quote retrieval & signing                  │
+│  - TokenOps: Token operations (mint, approve, balance)  │
+│  - EnvOps: Local environment management                 │
+│  - InitOps: Configuration initialization                │
+└────────────────┬────────────────────────────────────────┘
+                 │
+┌────────────────▼────────────────────────────────────────┐
+│  Core Services Layer (src/core/)                        │
+│  - Context: Central state manager                       │
+│  - ApiClient: HTTP communication                        │
+│  - Provider/TxBuilder: Blockchain interaction           │
+│  - SigningService: Cryptographic signatures             │
+│  - SessionStore: Persistent state                       │
+│  - Contracts: ABI management                            │
+└────────────────┬────────────────────────────────────────┘
+                 │
+┌────────────────▼────────────────────────────────────────┐
+│  External Systems                                       │
+│  - Solver API (quotes, orders, status)                  │
+│  - Blockchain RPCs (Anvil, testnets, mainnets)          │
+│  - Protocol contracts (InputSettler, OutputSettler,     |
+|                        The compact)                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+Each layer has clear responsibilities and communicates through well-defined interfaces. The CLI layer never directly touches blockchain state or makes API calls—it delegates to operations modules, which in turn use core services for actual I/O operations.
+
+### Quick Start
+
+```bash
+# Create alias for convenience
+alias oif-demo='cargo run --bin solver-demo --'
+```
+
+> **Note**: All session data, configuration, and request/response files are stored in the `.oif-demo` directory
+> in your current working directory. This includes:
+>
+> - Session state and JWT tokens
+> - Deployed contract addresses
+> - Generated quote requests (`requests/get_quote.req.json`)
+> - Quote responses (`requests/get_quote.res.json`)
+> - Signed orders (`requests/post_order.req.json`)
+
+### Quick Start Example
+
+Here's a typical workflow showing how the pieces fit together. For detailed step-by-step instructions, see the [Local Development Workflow](#local-development-workflow) section below.
+
+```bash
+# 1. Initialize configuration and start local environment
+oif-demo init load config/demo.toml --local
+oif-demo env start
+oif-demo env deploy --all
+oif-demo env setup
+
+# 2. Build an intent for a cross-chain swap
+oif-demo intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TOKA \
+  --to-token TOKB \
+  --amount 1 \
+  --settlement compact
+
+# 3. Get a quote from the solver
+oif-demo quote get .oif-demo/requests/get_quote.req.json
+
+# 4. Sign the quote
+oif-demo quote sign .oif-demo/requests/get_quote.res.json
+
+# 5. Submit the signed order
+oif-demo intent submit .oif-demo/requests/post_order.req.json
+```
+
+The `.oif-demo` directory serves as the workspace where all state is persisted—request/response JSON files, session data, contract addresses, and JWT tokens. This design allows you to inspect the exact data being sent and received at each step, making debugging straightforward.
+
+---
+
+## For Developers: Technical Deep Dive
+
+The following sections provide detailed technical information about the solver-demo architecture and internal workings. If you're just getting started, you can skip to the [Usage Workflows](#usage-workflows) section below.
+
+## Core Abstractions and Traits
+
+The architecture is built around a central `Context` struct and a collection of specialized service modules. Understanding these abstractions is key to understanding how the system operates.
+
+### Context - The Central Hub
+
+Located at `src/lib.rs:62`, the `Context` struct is the heart of the application. Every operation receives an `Arc<Context>` reference, giving it access to all services and configuration:
+
+```rust
+pub struct Context {
+    pub config: Config,
+    pub storage: Storage,
+    pub session: SessionStore,
+    pub tokens: TokenRegistry,
+    pub contracts: RwLock<Contracts>,
+    pub signing: SigningService,
+    pub jwt: JwtService,
+}
+```
+
+Context serves multiple purposes:
+
+1. **Dependency injection**: Operations modules don't need to know how to construct their dependencies
+2. **Shared state**: Configuration and session data are accessible everywhere without global variables
+3. **Service lifecycle**: All services are initialized once and shared across the application lifetime
+4. **Type safety**: Rust's ownership system ensures services can't be misused
+
+The Context provides key methods:
+
+- `Context::init()` - Loads configuration and initializes all services from a config file
+- `Context::load_existing()` - Restores a previous session from the `.oif-demo` directory
+- `Context::provider()` - Creates a blockchain provider for a specific chain
+- `Context::api_client()` - Creates an authenticated API client for the solver service
+- `Context::resolve_address()` - Converts account names ("user", "solver", "recipient") to addresses
+
+### Core Services
+
+#### ApiClient (`src/core/api.rs`)
+
+The `ApiClient` handles all HTTP communication with the solver service. It provides three primary operations:
+
+- `get_quote()` - POST to `/api/quotes` with an intent request
+- `submit_order()` - POST to `/api/orders` with a signed order
+- `get_order()` - GET from `/api/orders/{id}` for status queries
+
+The client automatically handles JWT authentication when configured. It uses a 30-second timeout and provides detailed error messages when requests fail. Responses are automatically deserialized into type-safe structures from the `solver-types` crate.
+
+#### Provider and TxBuilder (`src/core/blockchain.rs`)
+
+Blockchain interaction is split into two complementary types:
+
+**Provider** wraps Alloy's provider functionality with chain-specific configuration:
+
+- Maintains an RPC connection to a specific blockchain
+- Tests connectivity on creation by querying the chain ID
+- Provides methods for balance queries, contract calls, and block data
+- Supports special operations like `set_code()` for Anvil testing
+
+**TxBuilder** handles transaction construction and execution:
+
+- Automatically fills missing transaction parameters (gas, nonce, gas price)
+- Supports both signed and unsigned transaction submission
+- Provides `send()` for fire-and-forget and `send_and_wait()` for confirmation
+- Polls for transaction receipts with configurable timeouts
+
+These types work together—you create a Provider for a chain, then wrap it in a TxBuilder when you need to send transactions. The builder pattern ensures transactions are properly configured before submission.
+
+#### SigningService (`src/core/signing.rs`)
+
+One of the most complex services, `SigningService` handles EIP-712 signature generation for multiple signature schemes. The service automatically detects the required scheme based on order type:
+
+**Permit2 signatures** (for `OifEscrowV0` orders):
+
+- Compute the Permit2 witness digest
+- Sign with the user's private key
+- Prefix with `0x00` to indicate Permit2 scheme
+- Used when escrow settlement with Permit2 auth is selected
+
+**EIP-3009 signatures** (for `Oif3009V0` orders):
+
+- Fetch domain separator from the token contract
+- Reconstruct the EIP-3009 message digest
+- Sign with the user's private key
+- Prefix with `0x01` to indicate EIP-3009 scheme
+- Used when escrow settlement with EIP-3009 auth is selected
+
+**Compact signatures** (for `OifResourceLockV0` orders):
+
+- Fetch domain separator from TheCompact contract
+- Compute the BatchCompact or Compact digest
+- Sign with the user's private key
+- ABI-encode as `(bytes sponsorSig, bytes allocatorSig)` tuple
+- Used when compact settlement is selected
+
+The service at `src/core/signing.rs:103` exposes a single public method `sign_quote()` that handles scheme detection and delegates to the appropriate internal method. This abstraction means operations modules don't need to understand signature schemes—they just pass in a quote and get back a hex-encoded signature.
+
+#### SessionStore (`src/core/session.rs`)
+
+The `SessionStore` provides thread-safe access to persistent session state. It wraps a `Session` struct in an `Arc<RwLock<>>` to allow concurrent reads while ensuring exclusive writes.
+
+Session state includes:
+
+- **Config path**: Location of the TOML configuration file
+- **Config sections**: Mapping of TOML sections to their source files
+- **Placeholder map**: Dynamic address resolution (e.g., `{{ALLOCATOR_ADDRESS}}` → `0x123...`)
+- **Deployed contracts**: Contract addresses organized by chain ID
+- **JWT tokens**: Authentication tokens with expiration tracking
+- **Chains**: List of configured blockchain networks
+- **Environment**: Whether running in Local or testnet mode
+
+Key operations:
+
+- `get_jwt_token()` / `set_jwt_token()` - Token management with automatic expiration checking
+- `contracts()` / `set_contracts()` - Per-chain contract address storage
+- `set_token_contract()` - Stores token addresses after deployment with automatic symbol lookup
+- `update()` - Atomic updates using a closure to modify session state
+
+The session is automatically persisted to `.oif-demo/session.json` after every modification. This means if the CLI crashes or is interrupted, state is never lost—the next invocation can pick up exactly where it left off.
+
+#### Storage (`src/core/storage.rs`)
+
+A simple but essential service, `Storage` provides file-based JSON persistence. It manages a base directory (typically `.oif-demo`) and provides type-safe serialization:
+
+- `save<T: Serialize>()` - Writes a value to `{name}.json`
+- `load<T: DeserializeOwned>()` - Reads a value from `{name}.json`
+- `exists()` - Checks if a file exists
+- `subdir()` - Creates a nested storage instance for organizing files
+
+The storage layer handles directory creation, atomic writes (write to temp, then rename), and provides clear error messages when operations fail. All request/response files in `.oif-demo/requests/` are managed through Storage instances.
+
+#### TokenRegistry (`src/core/tokens.rs`)
+
+The `TokenRegistry` manages token metadata across all configured chains. It's built from the configuration file and provides:
+
+- Token address lookup by chain and symbol
+- Decimal conversion between human-readable amounts and wei
+- Validation that tokens exist on specified chains
+- Convenience methods like `get_or_error()` that provide detailed error messages
+
+This abstraction means the rest of the codebase never hardcodes decimal places or token addresses—everything flows from the configuration. When building intents, you refer to tokens by symbol ("USDC", "TOKA") and the registry resolves them to addresses.
+
+#### Contracts (`src/core/contracts.rs`)
+
+The `Contracts` service manages smart contract ABIs and provides methods for encoding contract calls. It maintains:
+
+- ABI definitions for standard contracts (ERC20, TheCompact)
+- Per-chain contract address mappings
+- Methods for common operations
+
+Key functionality:
+
+**ERC20 operations**:
+
+- `erc20_balance()` - Query token balance for an address
+- `erc20_approve()` - Encode approval transaction data
+- `erc20_mint()` - Encode mint transaction data (for test tokens)
+- `erc20_symbol()` - Fetch token symbol from contract
+
+**TheCompact operations**:
+
+- `thecompact_deposit()` - Encode ERC20 deposit transaction
+- `thecompact_register_allocator()` - Encode allocator registration
+
+**InputSettler operations**:
+
+- `input_settler_open()` - Encode on-chain intent submission
+
+The service loads ABIs once at initialization and provides zero-cost abstractions over Alloy's encoding functionality. Methods return `Result<Bytes>` containing the encoded calldata, ready to be used in transactions.
+
+#### JwtService (`src/core/jwt.rs`)
+
+When the solver API has authentication enabled, `JwtService` manages the token lifecycle:
+
+- Checks if a valid token exists in the session
+- Requests new tokens from the API when needed
+- Caches tokens in the session store to avoid repeated requests
+- Automatically handles token refresh when expiration is near
+
+The service coordinates with `SessionStore` to persist tokens and with `Config` to determine authentication settings. Operations modules don't interact with this service directly—the Context's `api_client()` method automatically includes authentication when needed.
+
+#### Config (`src/core/config.rs`)
+
+The `Config` service parses TOML configuration files and provides strongly-typed access to settings:
+
+- Network configurations (RPC URLs, chain IDs, explorer URLs)
+- Token definitions (address, symbol, decimals per chain)
+- Account configurations (addresses and private keys for user/solver/recipient)
+- Solver API settings (host, port, authentication configuration)
+
+The configuration system supports:
+
+- Include directives to split configuration across multiple files
+- Placeholder syntax (`{{VARIABLE_NAME}}`) for dynamic values
+- Environment variable integration for sensitive data
+- Validation that required fields are present
+
+When Context initializes, it loads the config and uses it to populate the TokenRegistry, set up the SessionStore, and prepare all other services.
+
+## Integration Architecture
+
+Understanding how the layers communicate is essential for working with or extending the codebase.
+
+### Layered Design
+
+#### CLI Layer (`src/cli/` and `src/bin/solver-demo.rs`)
+
+The binary entry point at `src/bin/solver-demo.rs` performs minimal work:
+
+1. Load environment variables from `.env` if present
+2. Parse command-line arguments with clap
+3. Initialize logging based on verbosity flags
+4. Dispatch to the appropriate command handler
+
+Command handlers (in `src/bin/solver-demo.rs`) follow a consistent pattern:
+
+```rust
+fn handle_{command}(cmd: CommandArgs) -> Result<()> {
+    // 1. Load context (existing session or create new)
+    let ctx = Context::load_existing().await?;
+
+    // 2. Create operations module
+    let ops = XxxOps::new(Arc::new(ctx));
+
+    // 3. Call business logic
+    let result = ops.some_operation(cmd.params).await?;
+
+    // 4. Display results using logging module
+    logging::success(&format!("Operation completed: {}", result));
+
+    Ok(())
+}
+```
+
+This pattern keeps the CLI layer thin—it's purely concerned with I/O and user interaction, never with business logic. The `logging` module at `src/core/logging.rs` provides consistent formatting for all output.
+
+#### Operations Layer (`src/operations/`)
+
+This is where business logic lives. Each operations module follows a standard structure:
+
+**IntentOps** (`src/operations/intent/mod.rs`):
+
+- `build()` - Constructs `GetQuoteRequest` from user parameters
+- `build_batch()` - Processes batch intent specifications from JSON
+- `submit()` - Submits orders to the API (with automatic Compact deposits)
+- `submit_onchain()` - Submits orders directly to InputSettler contracts
+- `status()` - Queries order status from the API
+
+**QuoteOps** (`src/operations/quote/mod.rs`):
+
+- `get()` - Fetches quotes from the solver API
+- `sign()` - Signs quotes using the SigningService
+- `get_and_sign_quote()` - Combines both operations for batch workflows
+
+**TokenOps** (`src/operations/token/mod.rs`):
+
+- `list()` - Displays available tokens per chain
+- `balance()` - Queries token balances (supports continuous monitoring)
+- `mint()` - Mints test tokens in local environments
+- `approve()` - Approves token spending for specific addresses
+
+**EnvOps** (`src/operations/env/mod.rs`):
+
+- `start()` - Launches Anvil processes for local chains
+- `stop()` - Terminates Anvil processes
+- `status()` - Checks which chains are running
+- `deploy()` - Deploys all necessary contracts to chains
+- `setup()` - Mints tokens and configures test environment
+
+**InitOps** (`src/operations/init/mod.rs`):
+
+- `create()` - Generates new configuration files
+- `load()` - Loads existing configuration and creates session
+
+Each operations struct holds an `Arc<Context>`, giving it access to all services. Methods are async and return `Result<T>`, with errors bubbling up to the CLI layer for display.
+
+### Data Flow Patterns
+
+#### Request Flow
+
+When a user issues a command, data flows through the system like this:
+
+```
+User Input (CLI args)
+  ↓
+Command Handler (validate & parse)
+  ↓
+Operations Module (business logic)
+  ↓ ↓ ↓
+Core Services (parallel usage)
+  - Config (read settings)
+  - SessionStore (load/save state)
+  - TokenRegistry (resolve symbols)
+  - Provider (blockchain queries)
+  - ApiClient (HTTP requests)
+  ↓
+External Systems
+  - Solver API
+  - Blockchain RPCs
+  ↓
+Response (type-safe structs)
+  ↓
+Operations Module (process response)
+  ↓
+Storage (persist results)
+  ↓
+Command Handler (format & display)
+  ↓
+User Output (terminal)
+```
+
+The flow is unidirectional—responses never skip layers. If the API returns an error, it becomes a Rust `Result::Err` that propagates up through operations to the CLI handler, which decides how to present it to the user.
+
+#### State Persistence Flow
+
+State management follows a read-modify-write pattern:
+
+```
+Command Execution Start
+  ↓
+Context::load_existing()
+  ↓
+Storage.load("session")
+  ↓
+SessionStore created with loaded Session
+  ↓
+Operations execute, modify session via SessionStore methods
+  ↓
+SessionStore.save() after each modification
+  ↓
+Storage.save("session", &session)
+  ↓
+Atomic write to .oif-demo/session.json
+```
+
+This means every modification is immediately persisted. If you deploy a contract and the CLI crashes before the next command, that contract address is already saved. When you restart, the session is restored exactly as it was.
+
+#### Configuration Loading Flow
+
+Configuration initialization is more complex because it involves placeholder resolution:
+
+```
+User: oif-demo init load config/demo.toml --local
+  ↓
+InitOps.load()
+  ↓
+Config::load(path)
+  ↓
+Parse TOML, follow include directives
+  ↓
+Build config_sections map (section → file path)
+  ↓
+Context::init(config_path, is_local)
+  ↓
+Create Storage (.oif-demo directory)
+  ↓
+Create SessionStore with environment type
+  ↓
+Build TokenRegistry from config networks
+  ↓
+Load Contracts ABIs (ERC20, TheCompact)
+  ↓
+Restore deployed contracts from session into Contracts
+  ↓
+SessionStore.set_chains() to populate chain list
+  ↓
+SessionStore.save() to persist session
+  ↓
+Context ready for use
+```
+
+Placeholder resolution happens later, when contracts are deployed:
+
+```
+Contract deployed at address 0x123...
+  ↓
+SessionStore.set_single_contract(chain, "Allocator", 0x123...)
+  ↓
+Save to session.deployed_contracts[chain].allocator
+  ↓
+When loading next time:
+  ↓
+If config has "{{ALLOCATOR_ADDRESS}}"
+  ↓
+SessionStore resolves to "0x123..." from deployed contracts
+```
+
+This two-phase approach means the configuration can reference contracts that don't exist yet, and they get resolved dynamically once deployed.
+
+### Session Management
+
+The `.oif-demo` directory structure:
+
+```
+.oif-demo/
+├── session.json                  # SessionStore state
+└── requests/
+    ├── get_quote.req.json       # Last intent request
+    ├── get_quote.res.json       # Last quote response
+    ├── post_order.req.json      # Last signed order
+    ├── get_quotes.req.json      # Batch intent requests
+    └── post_orders.req.json     # Batch signed orders
+```
+
+The session file contains:
+
+```json
+{
+  "config_path": "/path/to/config/demo.toml",
+  "config_sections": {
+    "main": "/path/to/config/demo.toml",
+    "networks": "/path/to/config/networks.toml"
+  },
+  "placeholder_map": {
+    "ALLOCATOR_ADDRESS": "0x123...",
+    "COMPACT_ADDRESS": "0x456..."
+  },
+  "deployed_contracts": {
+    "31337": {
+      "allocator": "0x123...",
+      "compact": "0x456...",
+      "input_settler": "0x789...",
+      "tokens": {
+        "TOKA": {
+          "address": "0xabc...",
+          "decimals": 18
+        }
+      }
+    }
+  },
+  "jwt_tokens": {
+    "default": {
+      "token": "eyJ...",
+      "expires_at": 1234567890
+    }
+  },
+  "chains": [{ "Custom": { "id": 31337 } }, { "Custom": { "id": 31338 } }],
+  "environment": "Local"
+}
+```
+
+This design means:
+
+- You can inspect the session file to see deployed addresses
+- You can manually edit the session if needed (though this is rarely necessary)
+- You can delete the session to start fresh
+- Request/response files are human-readable JSON for debugging
+
+### Configuration System
+
+The TOML configuration supports modular organization:
+
+**Main config** (`config/demo.toml`):
+
+```toml
+include = ["networks/local.toml"]
+
+[accounts]
+user = { address = "0x...", private_key = "{{USER_PRIVATE_KEY}}" }
+solver = { address = "0x...", private_key = "{{SOLVER_PRIVATE_KEY}}" }
+recipient = { address = "0x..." }
+
+[solver.api]
+host = "localhost"
+port = 3000
+
+[solver.api.auth]
+enabled = true
+secret = "{{JWT_SECRET}}"
+```
+
+**Networks config** (`networks/local.toml`):
+
+```toml
+[[networks]]
+id = 31337
+name = "Anvil1"
+rpc_urls = [
+  { http = "http://localhost:8545" }
+]
+explorer_url = ""
+
+[[networks.tokens]]
+symbol = "TOKA"
+address = "{{TOKA_ADDRESS}}"
+decimals = 18
+```
+
+The system resolves placeholders in this order:
+
+1. Check environment variables (`.env` file)
+2. Check SessionStore placeholder_map (deployed addresses)
+3. If not found, leave as literal string (will error if used)
+
+This three-tier approach (main config + includes + environment) keeps sensitive data separate, allows config reuse, and supports dynamic address injection.
+
+---
+
+## Usage Workflows
+
+The following sections provide practical, step-by-step instructions for using solver-demo in different environments.
+
+### Local Development Workflow
+
+#### 1. Initialize Environment
+
+```bash
+# Create and load configuration
+oif-demo init new config/demo.toml --force
+oif-demo init load config/demo.toml --local
+
+# Start local chains
+oif-demo env start
+
+# Deploy contracts
+oif-demo env deploy --all --force
+
+# Setup test environment (mint tokens, approve allowances)
+oif-demo env setup
+```
+
+#### 2. Verify Setup
+
+```bash
+# Check accounts
+oif-demo account list
+
+# List tokens
+oif-demo token list
+
+# Check balances
+oif-demo token balance
+```
+
+#### 3. Build and Execute Intent
+
+**Compact Settlement:**
+
+```bash
+# Build intent
+oif-demo intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TOKA \
+  --to-token TOKB \
+  --amount 1 \
+  --settlement compact
+
+# Get and sign quote
+oif-demo quote get .oif-demo/requests/get_quote.req.json
+oif-demo quote sign .oif-demo/requests/get_quote.res.json
+
+# Submit intent
+oif-demo intent submit .oif-demo/requests/post_order.req.json
+```
+
+**Permit2 Settlement:**
+
+```bash
+oif-demo intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TOKA \
+  --to-token TOKB \
+  --amount 1 \
+  --settlement escrow \
+  --auth permit2
+```
+
+**EIP-3009 Settlement:**
+
+```bash
+oif-demo intent build \
+  --from-chain 31337 \
+  --to-chain 31338 \
+  --from-token TOKA \
+  --to-token TOKB \
+  --amount 1 \
+  --settlement escrow \
+  --auth eip3009
+```
+
+### Testnet Workflow
+
+> **Note**: In production/testnet environments, you must manually approve tokens for Permit2.
+> Use `oif-demo token approve` to grant Permit2 permission to spend your tokens.
+> This is done automatically in local mode via `env setup`.
+
+#### 1. Setup Environment
+
+```bash
+# Load testnet configuration
+oif-demo init load config/testnet.toml
+
+# Check accounts and balances
+oif-demo account list
+oif-demo token balance
+
+# Approve tokens for Permit2 (required for escrow settlement)
+oif-demo token approve \
+  --chain 11155420 \
+  --token USDC \
+  --spender 0x000000000022D473030F116dDEE9F6B43aC78BA3 \
+  --amount 1000000
+```
+
+#### 2. Build Intent
+
+```bash
+# Exact output swap
+oif-demo intent build \
+  --to-chain 84532 \
+  --from-chain 11155420 \
+  --from-token USDC \
+  --to-token USDC \
+  --swap-type exact-output \
+  --amount 1 \
+  --settlement compact
+```
+
+#### 3. Get Quote and Submit
+
+```bash
+# Get quote
+oif-demo quote get .oif-demo/requests/get_quote.req.json
+
+# Sign quote
+oif-demo quote sign .oif-demo/requests/get_quote.res.json
+
+# Submit order
+oif-demo intent submit .oif-demo/requests/post_order.req.json
+```
+
+### Batch Processing
+
+#### 1. Create Batch File (`batch_intents.json`)
+
+```json
+{
+  "intents": [
+    {
+      "description": "USDC to USDC exact-input swap",
+      "enabled": true,
+      "origin_chain_id": 11155420,
+      "dest_chain_id": 84532,
+      "origin_token": {
+        "address": "0x191688B2Ff5Be8F0A5BCAB3E819C900a810FAaf6",
+        "symbol": "USDC",
+        "decimals": 6
+      },
+      "dest_token": {
+        "address": "0x73c83DAcc74bB8a704717AC09703b959E74b9705",
+        "symbol": "USDC",
+        "decimals": 6
+      },
+      "amounts": {
+        "input": "1"
+      },
+      "settlement": "escrow",
+      "auth": "permit2"
+    }
+  ]
+}
+```
+
+#### 2. Process Batch
+
+```bash
+# Build all intents
+oif-demo intent build-batch .oif-demo/requests/batch_intents.json
+
+# Get and sign all quotes
+oif-demo quote test .oif-demo/requests/get_quotes.req.json
+
+# Submit all orders
+oif-demo intent test .oif-demo/requests/post_orders.req.json
+```
+
+## Configuration
+
+### Environment Variables (`.env`)
+
+```bash
+# User Account (creates intents)
+export USER_ADDRESS=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+export USER_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+
+# Solver Account (executes settlements)
+export SOLVER_ADDRESS=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+export SOLVER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+
+# Recipient Account (receives tokens)
+export RECIPIENT_ADDRESS=0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+
+# API Configuration
+export JWT_SECRET=MySuperDuperSecureSecret123!
+```
+
+## Commands Reference
+
+### Init Commands
+
+```bash
+# Create new configuration
+oif-demo init new <path> [--force] [--chains <chain_ids>]
+
+# Load configuration
+oif-demo init load <path> [--local]
+```
+
+### Account Commands
+
+```bash
+# List accounts
+oif-demo account list
+
+# Show account details
+oif-demo account show <name>
+```
+
+### Config Commands
+
+```bash
+# Show current configuration
+oif-demo config
+
+# Validate configuration
+oif-demo config validate
+```
+
+### Environment Commands
+
+```bash
+# Start local environment
+oif-demo env start
+
+# Stop environment
+oif-demo env stop
+
+# Check status
+oif-demo env status
+
+# Deploy contracts
+oif-demo env deploy [--all] [--contract <name>] [--force] [--list] [--path <path>] [--chain <id>]
+
+# Setup test environment
+oif-demo env setup [--chain <id>] [--amount <tokens>]
+```
+
+### Token Commands
+
+```bash
+# List tokens
+oif-demo token list [--chains <ids>]
+
+# Check balance
+oif-demo token balance [--account <name>] [--follow <seconds>]
+
+# Mint tokens (local only)
+oif-demo token mint --chain <id> --token <symbol> --amount <amount> [--to <address>]
+
+# Approve tokens
+oif-demo token approve --chain <id> --token <symbol> --spender <address> --amount <amount>
+```
+
+### Intent Commands
+
+```bash
+# Build single intent
+oif-demo intent build \
+  --from-chain <id> --to-chain <id> \
+  --from-token <symbol> --to-token <symbol> \
+  --amount <amount> \
+  --settlement <compact|escrow> \
+  [--auth <permit2|eip3009>] \
+  [--swap-type <exact-input|exact-output>] \
+  [--output <path>]
+
+# Build batch intents
+oif-demo intent build-batch <input.json> [--output <path>]
+
+# Submit intent
+oif-demo intent submit <order.json> [--onchain] [--chain <id>]
+
+# Check status
+oif-demo intent status <order-id>
+
+# Test batch submission
+oif-demo intent test <orders.json>
+```
+
+### Quote Commands
+
+```bash
+# Get quote
+oif-demo quote get <request.json> [--output <path>]
+
+# Sign quote
+oif-demo quote sign <response.json> [--quote-index <n>] [--signature <sig>] [--output <path>]
+
+# Test batch quotes
+oif-demo quote test <requests.json>
+```
+
+## Settlement Types
+
+### Compact Settlement
+
+- Uses TheCompact protocol for resource locks
+- No separate auth required
+- Most gas-efficient
+- See [Compact Settlement example](#compact-settlement) in Local Development Workflow
+
+### Escrow Settlement
+
+Requires authentication method:
+
+- **Permit2**: Gasless approval via Uniswap's Permit2
+- **EIP-3009**: Transfer with authorization
+- See [Permit2 Settlement](#permit2-settlement) and [EIP-3009 Settlement](#eip-3009-settlement) examples in Local Development Workflow
+
+## Troubleshooting
+
+### Common Issues
+
+#### Anvil Not Starting
+
+```bash
+# Check if port is already in use
+lsof -i :8545
+
+# Kill existing Anvil processes
+pkill anvil
+```
+
+#### Contract Deployment Fails
+
+```bash
+# Ensure chains are running
+oif-demo env status
+
+# Force redeploy
+oif-demo env deploy --all --force
+```
+
+#### Quote Retrieval Fails
+
+```bash
+# Check solver API is running
+curl http://localhost:3000/health
+
+# Verify JWT token
+oif-demo config
+```
+
+#### Balance Not Updating
+
+```bash
+# Use follow mode to monitor
+oif-demo token balance --follow 5
+
+# Check specific account
+oif-demo token balance --account user
+```
+
+#### Intent Build Fails - "Insufficient Allowance" or "No Balance"
+
+```bash
+# For LOCAL environments - Did you forget to run env setup?
+# This command mints tokens and approves Permit2
+oif-demo env setup
+
+# Verify tokens were minted
+oif-demo token balance
+
+# For TESTNET environments - Manually approve Permit2
+oif-demo token approve \
+  --chain <chain-id> \
+  --token <token-symbol> \
+  --spender 0x000000000022D473030F116dDEE9F6B43aC78BA3 \
+  --amount <amount>
+```
+
+## Advanced Features
+
+### Monitoring Balances
+
+```bash
+# Follow all accounts every 5 seconds
+oif-demo token balance --account all --follow 5
+```
+
+### Custom Contract Deployment
+
+```bash
+# Deploy specific contract to specific chain
+oif-demo env deploy --contract MyToken --chain 31337
+```
+
+### On-chain Intent Submission
+
+```bash
+# Submit directly to blockchain (bypasses API)
+oif-demo intent submit order.json --onchain
+```
+
+---
+
+## Internal Flow Diagrams
+
+The following sections provide detailed technical information about how solver-demo processes requests internally. This information is useful for developers who need to understand the system's internal workings or extend its functionality.
+
+Let's trace the four most important workflows through the entire stack.
+
+### A. Intent Building Flow
+
+When you run `oif-demo intent build`, here's what happens:
+
+**Step 1: CLI Parsing** (`src/bin/solver-demo.rs:638`)
+
+The command handler receives parsed arguments:
+
+- Chain IDs (from_chain, to_chain)
+- Token symbols (from_token, to_token)
+- Amount (as string, e.g., "1.5")
+- Settlement type ("compact" or "escrow")
+- Optional auth type ("permit2" or "eip3009")
+- Optional output path
+
+**Step 2: Context Loading**
+
+```
+Context::load_existing()
+  ↓
+Read .oif-demo/session.json
+  ↓
+Config::load(session.config_path)
+  ↓
+Reconstruct Context with all services
+```
+
+**Step 3: Operations Module Call**
+
+```rust
+let intent_ops = IntentOps::new(Arc::new(ctx));
+let params = IntentParams {
+    from_chain: ChainId::from_u64(31337),
+    to_chain: ChainId::from_u64(31338),
+    from_token: "TOKA".to_string(),
+    to_token: "TOKB".to_string(),
+    amount: U256::from(1_000_000_000_000_000_000u128), // 1 token with 18 decimals
+    settlement: SettlementType::Compact,
+    // ... other fields
+};
+intent_ops.build(params, output_path).await?
+```
+
+**Step 4: Token Resolution** (`src/operations/intent/mod.rs:72`)
+
+```
+ctx.tokens.get_or_error(from_chain, "TOKA")
+  ↓
+TokenRegistry searches for token on chain 31337
+  ↓
+Returns TokenInfo { address: 0xabc..., symbol: "TOKA", decimals: 18 }
+  ↓
+Repeat for to_token on to_chain
+```
+
+If a token isn't found, the operation fails immediately with a clear error message.
+
+**Step 5: Settlement Validation** (`src/operations/intent/mod.rs:80`)
+
+```rust
+match params.settlement {
+    SettlementType::Escrow => {
+        // Escrow requires auth scheme
+        if params.auth.is_none() {
+            return Err("Auth scheme required for escrow");
+        }
+        // Creates OriginSubmission with Permit2 or EIP-3009
+    },
+    SettlementType::Compact => {
+        // Compact uses TheCompact lock
+        if params.auth.is_some() {
+            return Err("Auth scheme not used for compact");
+        }
+        // Creates AssetLockReference with TheCompact
+    },
+}
+```
+
+This validation catches configuration errors early.
+
+**Step 6: Address Resolution** (`src/operations/intent/mod.rs:64`)
+
+```
+Get user address (sender or default from config)
+  ↓
+Get recipient address (recipient or same as sender)
+  ↓
+Create InteropAddress for user (EIP-7930 format)
+  ↓
+Create InteropAddress for asset_input
+  ↓
+Create InteropAddress for asset_output
+  ↓
+Create InteropAddress for receiver
+```
+
+Each InteropAddress encodes the chain ID and address according to EIP-7930:
+
+```
+eip155:{chainId}:{address}
+```
+
+**Step 7: Request Construction** (`src/operations/intent/mod.rs:154`)
+
+```rust
+let intent = IntentRequest {
+    intent_type: IntentType::OifSwap,
+    inputs: vec![QuoteInput {
+        user,
+        asset: asset_input,
+        amount: Some(amount.to_string()),
+        lock: compact_lock_reference,
+    }],
+    outputs: vec![QuoteOutput {
+        receiver,
+        asset: asset_output,
+        amount: None, // None for exact input
+        calldata: None,
+    }],
+    swap_type: Some(SwapType::ExactInput),
+    min_valid_until: Some(current_timestamp + 300),
+    // ... other fields
+};
+
+let request = GetQuoteRequest {
+    user,
+    intent,
+    supported_types: vec!["oif-resource-lock-v0"],
+};
+```
+
+**Step 8: Storage** (`src/operations/intent/mod.rs:189`)
+
+```
+requests_storage.save("get_quote.req", &quote_request)
+  ↓
+Storage writes to .oif-demo/requests/get_quote.req.json
+  ↓
+File contains pretty-printed JSON
+```
+
+The flow is complete. The user now has a properly formatted request file ready for the next step.
+
+### B. Quote & Sign Flow
+
+Starting from the request file created above:
+
+**Step 1: Quote Retrieval** (`src/operations/quote/mod.rs:52`)
+
+```
+QuoteOps.get(.oif-demo/requests/get_quote.req.json)
+  ↓
+Read file and deserialize to GetQuoteRequest
+  ↓
+ctx.api_client().await
+  ↓
+JwtService checks for valid token in session
+  ↓
+[If token missing or expired]
+  Request new token from /api/auth
+  SessionStore.set_jwt_token()
+  ↓
+ApiClient created with JWT token
+  ↓
+api.get_quote(request)
+  ↓
+POST to http://localhost:3000/api/quotes
+  Headers: Authorization: Bearer {jwt}
+  Body: GetQuoteRequest JSON
+  ↓
+Solver processes request, returns GetQuoteResponse
+  ↓
+Response contains quotes array with order details
+  ↓
+Save response to .oif-demo/requests/get_quote.res.json
+```
+
+**Step 2: Quote Selection** (`src/operations/quote/mod.rs:104`)
+
+By default, the first quote is selected. The quote contains:
+
+- `quote_id`: Unique identifier
+- `order`: The OifOrder structure (OifEscrowV0, Oif3009V0, or OifResourceLockV0)
+- `valid_until`: Expiration timestamp
+- `eta`: Estimated time to execution
+
+**Step 3: Signature Generation** (`src/operations/quote/mod.rs:110`)
+
+```
+QuoteOps.sign(quote_response)
+  ↓
+Get user's private key from config
+  ↓
+ctx.signing.sign_quote(quote, private_key, provider).await
+  ↓
+SigningService.sign_quote() [src/core/signing.rs:103]
+  ↓
+Match on order type to determine scheme
+```
+
+**Step 4: Scheme-Specific Signing**
+
+For **Compact** orders (`OifResourceLockV0`):
+
+```
+Extract domain.verifyingContract (TheCompact address)
+Extract domain.chainId
+  ↓
+provider.call_contract(compact, "DOMAIN_SEPARATOR()")
+  ↓
+Get domain separator bytes from contract
+  ↓
+solver_types::utils::reconstruct_compact_digest(payload, domain_separator)
+  ↓
+Compute EIP-712 digest:
+  keccak256("\x19\x01" || domain_separator || struct_hash)
+  ↓
+wallet.sign_hash_sync(digest)
+  ↓
+Get 65-byte signature (r, s, v)
+  ↓
+encode_compact_signature():
+  ABI-encode as (bytes sponsorSig, bytes allocatorSig)
+  allocatorSig is empty for user-initiated flows
+  ↓
+Return hex-encoded tuple
+```
+
+For **Permit2** orders (`OifEscrowV0`):
+
+```
+solver_types::utils::reconstruct_permit2_digest(payload)
+  ↓
+Computes witness hash from order details
+Computes Permit2 message hash
+Computes EIP-712 digest
+  ↓
+wallet.sign_hash_sync(digest)
+  ↓
+Prefix signature with 0x00
+  ↓
+Return 0x00{r}{s}{v} (66 bytes total)
+```
+
+For **EIP-3009** orders (`Oif3009V0`):
+
+```
+Extract token address from domain.verifyingContract
+Extract chainId
+  ↓
+Check metadata for domain_separator
+  ↓
+[If not in metadata]
+  provider.call_contract(token, "DOMAIN_SEPARATOR()")
+  ↓
+solver_types::utils::reconstruct_eip3009_digest(payload, domain_separator)
+  ↓
+Compute EIP-712 digest from authorization message
+  ↓
+wallet.sign_hash_sync(digest)
+  ↓
+Prefix signature with 0x01
+  ↓
+Return 0x01{r}{s}{v} (66 bytes total)
+```
+
+**Step 5: Order Request Assembly** (`src/operations/quote/mod.rs:115`)
+
+```rust
+let order_request = PostOrderRequest {
+    order: quote.order.clone(),
+    signature: Bytes::from(signature_bytes),
+    quote_id: Some(quote.quote_id.clone()),
+    origin_submission: None,
+};
+```
+
+**Step 6: Storage** (`src/operations/quote/mod.rs:1022`)
+
+```
+Save to .oif-demo/requests/post_order.req.json
+  ↓
+File now contains signed order ready for submission
+```
+
+The signature generation is where most of the complexity lives. The automatic scheme detection means users don't need to understand the difference between Permit2, EIP-3009, and Compact—they just specify settlement type and the system handles the rest.
+
+### C. Order Submission Flow
+
+Starting with the signed order:
+
+**Step 1: Pre-Submission Check** (`src/operations/intent/mod.rs:306`)
+
+```
+IntentOps.submit(post_order_request)
+  ↓
+Check order.order_type()
+  ↓
+[If "oif-resource-lock-v0" (Compact)]
+  ↓
+  deposit_compact_tokens(order)
+```
+
+**Step 2: Compact Deposit Process** (`src/operations/intent/mod.rs:467`)
+
+This step is critical for Compact orders because TheCompact requires users to have a locked resource allocation before the solver can use it:
+
+```
+Extract payload.domain.chainId
+  ↓
+Extract payload.message.commitments[0]:
+  { token: "0xabc...", amount: "1000000000000000000" }
+  ↓
+Extract payload.message.sponsor (user address)
+  ↓
+Get allocator address from contracts
+  ↓
+Generate allocator lock tag:
+  [0x00, ...last 11 bytes of allocator address]
+  ↓
+Prepare approve transaction:
+  erc20.approve(TheCompact, amount)
+  ↓
+TxBuilder.send(approve_tx)
+  ↓
+Wait for confirmation
+  ↓
+Prepare deposit transaction:
+  TheCompact.depositERC20(token, lockTag, amount, sponsor)
+  ↓
+TxBuilder.send(deposit_tx)
+  ↓
+Wait for confirmation
+  ↓
+User now has locked allocation for the order
+```
+
+Without this deposit, TheCompact settlement would fail because the solver wouldn't be able to access the user's tokens through the resource lock mechanism.
+
+**Step 3: API Submission** (`src/operations/intent/mod.rs:316`)
+
+```
+ctx.api_client().await
+  ↓
+api.submit_order(post_order_request)
+  ↓
+POST to http://localhost:3000/api/orders
+  Headers: Authorization: Bearer {jwt}
+  Body: PostOrderRequest JSON containing:
+    - order (full OifOrder structure)
+    - signature (hex-encoded bytes)
+    - quote_id (links to original quote)
+  ↓
+Solver validates signature
+Solver validates order parameters
+Solver queues order for execution
+  ↓
+Returns PostOrderResponse:
+  { order_id: "uuid-...", status: "pending" }
+```
+
+**Step 4: Response Handling** (`src/operations/intent/mod.rs:321`)
+
+```
+Extract order_id from response
+  ↓
+Return to CLI handler
+  ↓
+logging::success("Order submitted: {order_id}")
+  ↓
+User can now query status with:
+  oif-demo intent status {order_id}
+```
+
+The submission flow shows the asymmetry between settlement types—Compact orders require on-chain setup before API submission, while Permit2 and EIP-3009 orders can be submitted directly because they use off-chain authorization signatures.
+
+### D. Environment Setup Flow (Local Development)
+
+This is the most complex workflow because it orchestrates multiple blockchain operations across multiple chains:
+
+**Step 1: Chain Startup** (`src/operations/env/mod.rs` - start method)
+
+```
+EnvOps.start()
+  ↓
+For each configured chain:
+  ↓
+  Spawn Anvil process:
+    anvil --port {8545 + index} --chain-id {chain_id}
+  ↓
+  Store process PID in session
+  ↓
+  Test connectivity:
+    Provider::new(chain_id, rpc_url).await
+    provider.get_chain_id()
+  ↓
+  [If connection fails, kill process and error]
+  ↓
+SessionStore.save() with Anvil PIDs
+  ↓
+All chains running
+```
+
+**Step 2: Contract Deployment** (`src/operations/env/deploy.rs`)
+
+For each chain:
+
+```
+Get Provider for chain
+Get user's private key
+Create TxBuilder with signer
+  ↓
+Deploy InputSettlerEscrow:
+  bytecode = read from artifacts
+  constructor args: (permit2_address)
+  tx = TxBuilder.send_and_wait(deploy_tx)
+  input_settler = tx.contract_address
+  SessionStore.set_single_contract(chain, "InputSettlerEscrow", input_settler)
+  ↓
+Deploy InputSettlerCompact:
+  constructor args: (compact_address)
+  input_settler_compact = tx.contract_address
+  SessionStore.set_single_contract(chain, "InputSettlerCompact", input_settler_compact)
+  ↓
+Deploy or Set Permit2:
+  [If testnet/mainnet] Use known address
+  [If local] Deploy from bytecode
+  SessionStore.set_single_contract(chain, "Permit2", permit2)
+  ↓
+Deploy TheCompact:
+  bytecode + constructor args
+  compact = tx.contract_address
+  SessionStore.set_single_contract(chain, "TheCompact", compact)
+  ↓
+Deploy AlwaysOKAllocator:
+  constructor args: (compact_address)
+  allocator = tx.contract_address
+  SessionStore.set_single_contract(chain, "AlwaysOKAllocator", allocator)
+  ↓
+Deploy OutputSettler:
+  constructor args: (compact_address)
+  output_settler = tx.contract_address
+  SessionStore.set_single_contract(chain, "OutputSettler", output_settler)
+  ↓
+For each configured token:
+  Deploy MockERC20:
+    constructor args: (name, symbol, decimals)
+    token = tx.contract_address
+    SessionStore.set_token_contract(chain, token, ctx).await
+    [This queries token.symbol() and stores by symbol]
+  ↓
+All contracts deployed and addresses stored
+```
+
+**Step 3: Environment Setup** (`src/operations/env/setup.rs`)
+
+```
+EnvOps.setup()
+  ↓
+For each chain:
+  For each token:
+    For each account (user, solver, recipient):
+      ↓
+      Mint tokens:
+        erc20.mint(account, amount)
+        TxBuilder.send_and_wait(mint_tx)
+      ↓
+  For each token:
+    ↓
+    Approve Permit2:
+      erc20.approve(Permit2, MAX_UINT256)
+      From user account
+      TxBuilder.send_and_wait(approve_tx)
+    ↓
+  Register allocator with TheCompact:
+    TheCompact.__registerAllocator(allocator, proof)
+    From user account
+    TxBuilder.send_and_wait(register_tx)
+  ↓
+Environment fully configured
+```
+
+After this flow completes:
+
+- All contracts are deployed and addresses are in the session
+- All accounts have test tokens
+- Permit2 is approved to spend tokens on behalf of users
+- TheCompact knows about the allocator and can accept deposits
+- The system is ready to build and execute intents
+
+This workflow demonstrates how the operations layer orchestrates complex multi-step processes using core services. Each blockchain operation uses TxBuilder for automatic gas estimation and confirmation waiting. Each successful deployment immediately persists to the session, so partial failures can be resumed from the last successful step.
+
+## Summary
+
+The `solver-demo` crate is architected around clear separation of concerns:
+
+- **CLI layer** handles user interaction
+- **Operations layer** implements business workflows
+- **Core services** provide reusable functionality
+- **Types layer** ensures type safety and error handling
+
+This structure makes the codebase:
+
+- **Testable**: Each layer can be tested independently
+- **Maintainable**: Changes to one layer rarely affect others
+- **Extensible**: New operations can be added by following existing patterns
+- **Debuggable**: State persistence and file-based requests make inspection easy
+
+---
+
+## Related Documentation
+
+- [solver-service](/docs/solvers/crates/solver-service) - Production solver service that demo interacts with
+- [solver-types](/docs/solvers/crates/solver-types) - API types and data structures used in demo
+- [solver-config](/docs/solvers/crates/solver-config) - Configuration format used by demo
+- [solver-order](/docs/solvers/crates/solver-order) - Order structures and validation logic
+- [solver-core](/docs/solvers/crates/solver-core) - Core solver engine that processes submitted intents

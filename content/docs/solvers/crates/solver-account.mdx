@@ -1,0 +1,756 @@
+---
+title: solver-account
+description: Cryptographic account management and signing operations for OIF Solvers
+---
+
+## Overview
+
+The `solver-account` crate manages cryptographic accounts and signing operations for the OIF Solver. It provides a unified interface for different signing backends—local wallets, cloud key management services (AWS KMS, GCP KMS), or vault systems—while maintaining security boundaries around private key access.
+
+### Core Responsibilities
+
+- **Transaction Signing**: EIP-155 compliant signatures for blockchain submission
+- **Message Signing**: EIP-191 compliant signatures for authentication
+- **Address Management**: Derive and cache Ethereum addresses from keys
+- **Configuration**: Schema-based validation of account configurations
+- **Extensibility**: Plugin architecture for multiple account implementations
+
+### Architecture
+
+The crate uses a three-layer design:
+
+```
+┌─────────────────────────────────────────┐
+│         Application Layer               │
+│    (SolverEngine, Handlers)             │
+└────────────────┬────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────┐
+│      AccountService                     │
+│      - Simplified API                   │
+│      - Ownership management             │
+└────────────────┬────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────┐
+│   AccountInterface (Trait)              │
+│   - Contract definition                 │
+│   - Polymorphic behavior                │
+└────────────────┬────────────────────────┘
+                 │
+        ┌────────┴────────┐
+        ▼                 ▼
+┌──────────────┐   ┌─────────────────┐
+│ LocalWallet  │   │ Future: KMS,    │
+│              │   │ Vault, etc.     │
+└──────────────┘   └─────────────────┘
+```
+
+**Service Layer**: `AccountService` provides the public API used throughout the solver. It wraps the underlying implementation and serves as a future extension point for logging, metrics, or rate limiting.
+
+**Interface Layer**: `AccountInterface` trait defines the contract all implementations must fulfill. This enables runtime selection of account types without code changes.
+
+**Implementation Layer**: Concrete types like `LocalWallet` handle actual cryptographic operations using proven libraries (Alloy).
+
+### Integration Context
+
+The solver-account crate is a core dependency used by:
+
+```
+solver-core      → Signs transactions during order execution
+solver-delivery  → Initializes providers with private keys
+solver-service   → Signs authentication messages for APIs
+```
+
+---
+
+## Account Management Features
+
+### AccountInterface Trait
+
+The core abstraction enabling pluggable account implementations:
+
+```rust
+#[async_trait]
+pub trait AccountInterface: Send + Sync {
+    fn config_schema(&self) -> Box<dyn ConfigSchema>;
+    async fn address(&self) -> Result<Address, AccountError>;
+    async fn sign_transaction(&self, tx: &Transaction) -> Result<Signature, AccountError>;
+    async fn sign_message(&self, message: &[u8]) -> Result<Signature, AccountError>;
+    fn get_private_key(&self) -> SecretString;
+}
+```
+
+#### `config_schema()`
+
+Returns the validation schema for this implementation's TOML configuration. Called before instantiation to validate configuration and provide clear error messages.
+
+```rust
+let schema = implementation.config_schema();
+schema.validate(&config)?;  // Fails early with specific errors
+```
+
+#### `address()`
+
+Returns the Ethereum address associated with this account. Implementations typically cache this value since it's derived from the public key and doesn't change.
+
+```rust
+let solver_address = account.address().await?;
+tracing::info!("Solver operating as: {:?}", solver_address);
+```
+
+#### `sign_transaction()`
+
+Creates an EIP-155 compliant signature for a transaction. Takes a `Transaction` struct and returns a 65-byte signature (r, s, v components).
+
+```rust
+let tx = Transaction {
+    to: Some(contract_address),
+    data: encoded_call,
+    value: U256::ZERO,
+    chain_id: 1,
+    nonce: Some(5),
+    gas_limit: Some(21000),
+    gas_price: Some(20_000_000_000),
+    ..Default::default()
+};
+let signature = account.sign_transaction(&tx).await?;
+```
+
+#### `sign_message()`
+
+Creates an EIP-191 compliant signature for arbitrary data. Used for off-chain authentication and API authorization.
+
+```rust
+let challenge = b"authenticate-solver-session-123";
+let signature = account.sign_message(challenge).await?;
+// Signature can be verified off-chain to prove address ownership
+```
+
+#### `get_private_key()`
+
+Exports the private key as a `SecretString` (zero-on-drop). Currently required by delivery implementations for provider initialization.
+
+### AccountService
+
+The facade implementation provides a simplified API:
+
+```rust
+pub struct AccountService {
+    implementation: Box<dyn AccountInterface>,
+}
+
+impl AccountService {
+    pub fn new(implementation: Box<dyn AccountInterface>) -> Self;
+    pub async fn get_address(&self) -> Result<Address, AccountError>;
+    pub async fn sign(&self, tx: &Transaction) -> Result<Signature, AccountError>;
+    pub fn get_private_key(&self) -> SecretString;
+}
+```
+
+Method names are more concise (`sign` vs `sign_transaction`), and the service owns the boxed trait object, simplifying ownership management in application code.
+
+### Error Handling
+
+Three error variants for different failure modes:
+
+```rust
+pub enum AccountError {
+    SigningFailed(String),    // Runtime errors during signing
+    InvalidKey(String),        // Configuration/initialization errors
+    Implementation(String),    // Backend-specific errors
+}
+```
+
+**SigningFailed**: Transaction parameters invalid, address validation failed, or cryptographic operation failed. Often retryable after fixing inputs.
+
+**InvalidKey**: Private key malformed, wrong format, or invalid hex. Not retryable—fix the configuration.
+
+**Implementation**: Backend-specific issues like network timeouts, API rate limits, or file system errors. May be transient and retryable.
+
+### Transaction Structure
+
+```rust
+pub struct Transaction {
+    pub to: Option<Address>,              // None for contract creation
+    pub data: Vec<u8>,                     // Calldata
+    pub value: U256,                       // Wei amount
+    pub chain_id: u64,                     // Network ID
+    pub nonce: Option<u64>,                // Transaction count
+    pub gas_limit: Option<u64>,            // Gas limit
+    pub gas_price: Option<u128>,           // Legacy gas price
+    pub max_fee_per_gas: Option<u128>,     // EIP-1559
+    pub max_priority_fee_per_gas: Option<u128>, // EIP-1559 tip
+}
+```
+
+Gas fields are optional to support partial transaction construction, but must be set before signing for real transactions. Defaults to 0 which will cause failures.
+
+### Factory Pattern
+
+Implementations register themselves via the factory pattern:
+
+```rust
+pub type AccountFactory = fn(&toml::Value) -> Result<Box<dyn AccountInterface>, AccountError>;
+
+pub struct Registry;
+
+impl ImplementationRegistry for Registry {
+    const NAME: &'static str = "local";  // Used in config
+    type Factory = AccountFactory;
+
+    fn factory() -> Self::Factory {
+        create_account
+    }
+}
+```
+
+All implementations are collected in `get_all_implementations()`:
+
+```rust
+pub fn get_all_implementations() -> Vec<(&'static str, AccountFactory)> {
+    vec![
+        (local::Registry::NAME, local::Registry::factory()),
+        // Future implementations added here
+    ]
+}
+```
+
+Configuration specifies which implementation to use:
+
+```toml
+[account]
+primary = "local"
+
+[account.implementations.local]
+private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+```
+
+---
+
+## Integration Architecture
+
+### System Integration
+
+```
+┌────────────────────────────────────────────┐
+│          Solver Application                │
+│                                            │
+│  1. Load Config                            │
+│     ↓                                      │
+│  2. Get Factory                            │
+│     get_all_implementations()["local"]     │
+│     ↓                                      │
+│  3. Create Implementation                  │
+│     factory(&config) → Box<LocalWallet>    │
+│     ↓                                      │
+│  4. Wrap in Service                        │
+│     AccountService::new(impl)              │
+│     ↓                                      │
+│  5. Share via Arc                          │
+│     Arc::new(service)                      │
+│     ↓                                      │
+│  6. Pass to Components                     │
+│     ├─ SolverEngine                        │
+│     ├─ IntentHandler                       │
+│     ├─ OrderHandler                        │
+│     └─ TokenManager                        │
+└────────────────────────────────────────────┘
+```
+
+### Component Integration
+
+In `solver-core`:
+
+```rust
+pub struct SolverEngine {
+    account: Arc<AccountService>,
+    delivery: Arc<DeliveryService>,
+    order: Arc<OrderService>,
+    // ...
+}
+
+impl SolverEngine {
+    pub fn new(
+        account: Arc<AccountService>,
+        // other dependencies
+    ) -> Self {
+        // Account is shared across handlers
+        let intent_handler = IntentHandler::new(
+            Arc::clone(&account),
+            // ...
+        );
+
+        Self { account, /* ... */ }
+    }
+}
+```
+
+### Signing Flow
+
+Transaction signing during order execution:
+
+```
+Order Validated
+      ↓
+Generate Fill Transaction
+      ↓
+┌─────────────────────────────────┐
+│ OrderHandler                    │
+│                                 │
+│  let tx = order_service         │
+│      .generate_fill_transaction(│
+│          &order                 │
+│      )?;                        │
+│                                 │
+│  let sig = account              │
+│      .sign(&tx)                 │
+│      .await?;                   │
+│      ↓                          │
+│  AccountService::sign()         │
+│      ↓                          │
+│  LocalWallet::sign_transaction()│
+│      ├─ Build TxLegacy          │
+│      ├─ Encode with EIP-155     │
+│      ├─ Hash with Keccak256     │
+│      ├─ ECDSA sign              │
+│      └─ Return signature        │
+│                                 │
+│  delivery.submit(tx, sig)       │
+└─────────────────────────────────┘
+      ↓
+Transaction Broadcast
+```
+
+### LocalWallet Implementation
+
+The current production implementation:
+
+```rust
+pub struct LocalWallet {
+    signer: PrivateKeySigner,  // From alloy-signer-local
+}
+
+impl LocalWallet {
+    pub fn new(private_key_hex: &str) -> Result<Self, AccountError> {
+        let signer = private_key_hex
+            .parse::<PrivateKeySigner>()
+            .map_err(|e| AccountError::InvalidKey(format!("Invalid private key: {}", e)))?;
+
+        Ok(Self { signer })
+    }
+}
+```
+
+Wraps Alloy's `PrivateKeySigner` for cryptographic operations. Alloy handles:
+
+- Key validation
+- Public key derivation
+- Address computation
+- EIP-155 transaction signing
+- EIP-191 message signing
+
+Configuration schema:
+
+```rust
+impl ConfigSchema for LocalWalletSchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        let schema = Schema::new(
+            vec![
+                Field::new("private_key", FieldType::String)
+                    .with_validator(|value| {
+                        let key = value.as_str()?;
+                        let key = key.strip_prefix("0x").unwrap_or(key);
+
+                        if key.len() != 64 {
+                            return Err("Private key must be 64 hex characters".to_string());
+                        }
+
+                        hex::decode(key).map_err(|_| "Invalid hexadecimal")?;
+                        Ok(())
+                    })
+            ],
+            vec![],
+        );
+
+        schema.validate(config)
+    }
+}
+```
+
+Validates that private keys are:
+
+- String type
+- 64 hexadecimal characters (32 bytes)
+- Valid hex encoding
+- With or without "0x" prefix
+
+---
+
+## Security Considerations
+
+### Private Key Protection
+
+Private keys are wrapped in `SecretString`:
+
+```rust
+pub struct SecretString(Zeroizing<String>);
+```
+
+`Zeroizing` automatically zeros memory when the value is dropped, preventing keys from lingering in heap memory after use.
+
+Expose keys only when necessary:
+
+```rust
+// Good: Temporary exposure
+let result = private_key.with_exposed(|key| {
+    use_key_immediately(key)
+});
+
+// Avoid: Persistent exposure
+let key_string = private_key.expose_secret().to_string();  // Stays in memory
+```
+
+### Configuration Security
+
+Store keys in environment variables, not plain text:
+
+```toml
+# Good
+[account.implementations.local]
+private_key = "${SOLVER_PRIVATE_KEY}"
+
+# Bad
+[account.implementations.local]
+private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+```
+
+### EIP-155 Replay Protection
+
+Transaction signatures include `chain_id` to prevent replay attacks across chains:
+
+```rust
+TxLegacy {
+    chain_id: Some(tx.chain_id),  // Binds signature to specific chain
+    nonce: tx.nonce.unwrap_or(0),
+    // ...
+}
+```
+
+The recovery ID (v) is computed as:
+
+```
+v = chain_id * 2 + 35 + {0, 1}
+```
+
+This makes a signature valid only on the chain it was created for.
+
+### EIP-191 Message Signing
+
+Messages are prefixed to prevent transaction signature reuse:
+
+```
+"\\x19Ethereum Signed Message:\\n" + len(message) + message
+```
+
+Alloy's `sign_message()` applies this automatically. The prefix ensures a message signature cannot be used as a transaction signature, even if their hashes match.
+
+### Error Messages
+
+Don't leak sensitive information:
+
+```rust
+// Good
+Err(AccountError::SigningFailed("Invalid transaction parameters".to_string()))
+
+// Bad
+Err(AccountError::SigningFailed(format!("Failed with key {}", private_key)))
+```
+
+---
+
+## Implementation Guide
+
+### Adding a New Account Type
+
+Complete guide for implementing custom account backends (e.g., AWS KMS, HashiCorp Vault, GCP KMS).
+
+#### Step 1: Create Implementation Structure
+
+```rust
+// src/implementations/my_wallet.rs
+
+use crate::{AccountError, AccountInterface};
+use async_trait::async_trait;
+use solver_types::{Address, ConfigSchema, Signature, Transaction, SecretString};
+
+pub struct MyWallet {
+    config: MyWalletConfig,
+    client: MyWalletClient,
+}
+
+struct MyWalletConfig {
+    api_key: String,
+    key_id: String,
+    region: Option<String>,
+}
+
+impl MyWallet {
+    pub fn new(config: MyWalletConfig) -> Result<Self, AccountError> {
+        let client = MyWalletClient::connect(&config)
+            .map_err(|e| AccountError::Implementation(e.to_string()))?;
+
+        Ok(Self { config, client })
+    }
+}
+```
+
+#### Step 2: Implement AccountInterface
+
+```rust
+#[async_trait]
+impl AccountInterface for MyWallet {
+    fn config_schema(&self) -> Box<dyn ConfigSchema> {
+        Box::new(MyWalletSchema)
+    }
+
+    async fn address(&self) -> Result<Address, AccountError> {
+        let address = self.client
+            .get_address(&self.config.key_id)
+            .await
+            .map_err(|e| AccountError::Implementation(e.to_string()))?;
+
+        Ok(Address(address.to_vec()))
+    }
+
+    async fn sign_transaction(&self, tx: &Transaction) -> Result<Signature, AccountError> {
+        // Build transaction digest
+        let digest = self.encode_transaction(tx)?;
+
+        // Sign with remote service
+        let signature = self.client
+            .sign(&self.config.key_id, &digest)
+            .await
+            .map_err(|e| AccountError::SigningFailed(e.to_string()))?;
+
+        Ok(Signature(signature))
+    }
+
+    async fn sign_message(&self, message: &[u8]) -> Result<Signature, AccountError> {
+        // Apply EIP-191 prefix
+        let prefix = format!("\\x19Ethereum Signed Message:\\n{}", message.len());
+        let full_message = [prefix.as_bytes(), message].concat();
+        let digest = keccak256(&full_message);
+
+        // Sign digest
+        let signature = self.client
+            .sign(&self.config.key_id, &digest)
+            .await
+            .map_err(|e| AccountError::SigningFailed(e.to_string()))?;
+
+        Ok(Signature(signature))
+    }
+
+    fn get_private_key(&self) -> SecretString {
+        // For remote signers (KMS, Vault) that can't export keys,
+        // return a placeholder. This is a current limitation.
+        SecretString::from("unavailable")
+    }
+}
+
+impl MyWallet {
+    fn encode_transaction(&self, tx: &Transaction) -> Result<Vec<u8>, AccountError> {
+        // Must implement EIP-155 compliant encoding
+        // See Alloy's TxLegacy encoding for reference
+        todo!()
+    }
+}
+```
+
+#### Step 3: Create Configuration Schema
+
+```rust
+use solver_types::{ConfigSchema, Schema, Field, FieldType, ValidationError};
+
+pub struct MyWalletSchema;
+
+impl ConfigSchema for MyWalletSchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        let schema = Schema::new(
+            // Required fields
+            vec![
+                Field::new("api_key", FieldType::String)
+                    .with_validator(|value| {
+                        match value.as_str() {
+                            Some(key) if key.len() >= 32 => Ok(()),
+                            _ => Err("API key must be at least 32 characters".to_string()),
+                        }
+                    }),
+                Field::new("key_id", FieldType::String),
+            ],
+            // Optional fields
+            vec![
+                Field::new("region", FieldType::String),
+            ],
+        );
+
+        schema.validate(config)
+    }
+}
+```
+
+#### Step 4: Create Factory Function
+
+```rust
+pub fn create_account(config: &toml::Value) -> Result<Box<dyn AccountInterface>, AccountError> {
+    // Validate first
+    MyWalletSchema.validate(config)
+        .map_err(|e| AccountError::InvalidKey(format!("Invalid config: {}", e)))?;
+
+    // Extract configuration
+    let wallet_config = MyWalletConfig {
+        api_key: config["api_key"].as_str().expect("validated").to_string(),
+        key_id: config["key_id"].as_str().expect("validated").to_string(),
+        region: config.get("region").and_then(|v| v.as_str()).map(String::from),
+    };
+
+    // Create instance
+    let wallet = MyWallet::new(wallet_config)?;
+
+    Ok(Box::new(wallet))
+}
+```
+
+#### Step 5: Register Implementation
+
+```rust
+use solver_types::ImplementationRegistry;
+use crate::AccountRegistry;
+
+pub struct Registry;
+
+impl ImplementationRegistry for Registry {
+    const NAME: &'static str = "my_wallet";
+    type Factory = crate::AccountFactory;
+
+    fn factory() -> Self::Factory {
+        create_account
+    }
+}
+
+impl AccountRegistry for Registry {}
+```
+
+#### Step 6: Add to Module Exports
+
+```rust
+// In src/lib.rs
+
+pub mod implementations {
+    pub mod local;
+    pub mod my_wallet;  // Add here
+}
+
+pub fn get_all_implementations() -> Vec<(&'static str, AccountFactory)> {
+    use implementations::{local, my_wallet};
+
+    vec![
+        (local::Registry::NAME, local::Registry::factory()),
+        (my_wallet::Registry::NAME, my_wallet::Registry::factory()),
+    ]
+}
+```
+
+#### Step 7: Configuration
+
+```toml
+[account]
+primary = "my_wallet"
+
+[account.implementations.my_wallet]
+api_key = "${MY_WALLET_API_KEY}"
+key_id = "key-12345"
+region = "us-east-1"
+```
+
+---
+
+## Best Practices
+
+### Testing Your Implementation
+
+Create comprehensive tests for your account implementation:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_address_derivation() {
+        let wallet = MyWallet::new(test_config()).unwrap();
+        let address = wallet.address().await.unwrap();
+        assert_eq!(address, expected_address());
+    }
+
+    #[tokio::test]
+    async fn test_transaction_signing() {
+        let wallet = MyWallet::new(test_config()).unwrap();
+        let tx = test_transaction();
+        let signature = wallet.sign_transaction(&tx).await.unwrap();
+        
+        // Verify signature is valid
+        assert!(verify_signature(&tx, &signature, &wallet.address().await.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_message_signing() {
+        let wallet = MyWallet::new(test_config()).unwrap();
+        let message = b"test message";
+        let signature = wallet.sign_message(message).await.unwrap();
+        
+        // Verify EIP-191 compliance
+        assert!(verify_eip191_signature(message, &signature, &wallet.address().await.unwrap()));
+    }
+}
+```
+
+### Error Handling
+
+Map errors appropriately based on their nature:
+
+```rust
+// Configuration errors
+.map_err(|e| AccountError::InvalidKey(format!("Invalid config: {}", e)))?
+
+// Signing failures
+.map_err(|e| AccountError::SigningFailed(format!("Failed to sign: {}", e)))?
+
+// Backend-specific errors
+.map_err(|e| AccountError::Implementation(format!("KMS error: {}", e)))?
+```
+
+### Performance Considerations
+
+- Cache derived addresses to avoid redundant computations
+- Implement connection pooling for remote signers
+- Use async operations to avoid blocking
+- Consider rate limiting for API-based implementations
+
+### Common Pitfalls
+
+1. **Forgetting EIP-155**: Always include `chain_id` in transaction signatures
+2. **Missing EIP-191 prefix**: Use standard message signing format
+3. **Leaking keys in logs**: Never log private keys or expose them in error messages
+4. **Blocking operations**: Always use async for I/O operations
+5. **Poor error messages**: Provide actionable error messages without exposing sensitive data
+
+---
+
+## Related Documentation
+
+- [solver-core](/docs/solvers/crates/solver-core) - Core solver engine that uses account services
+- [solver-delivery](/docs/solvers/crates/solver-delivery) - Transaction delivery using signed transactions
+- [solver-config](/docs/solvers/crates/solver-config) - Configuration management for account settings
+

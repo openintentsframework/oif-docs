@@ -1,4 +1,10 @@
 {
-  "title": "Solvers"
+  "title": "Solvers",
+  "pages": [
+    "quickstart",
+    "how-it-works",
+    "architecture",
+    "api-reference",
+    "crates"
+  ]
 }
-

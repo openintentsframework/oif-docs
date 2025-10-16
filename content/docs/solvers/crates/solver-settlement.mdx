@@ -1,0 +1,830 @@
+---
+title: solver-settlement
+description: Settlement mechanisms for finalizing cross-chain order execution in the OIF Solver
+---
+
+## Overview
+
+The `solver-settlement` crate manages the finalization phase of order execution in the OIF solver system. After an order is filled on a destination chain, settlement handles three critical tasks: validating that the fill occurred correctly, coordinating cross-chain oracle attestations, and determining when a solver can claim their rewards.
+
+### Core Responsibilities
+
+**Settlement operates independently from order types and standards.** Whether working with EIP-7683 orders, custom order formats, or any other specification, the settlement layer focuses solely on the mechanics of proof generation and attestation delivery. This separation allows the same settlement infrastructure to support multiple order standards without modification.
+
+The crate provides a **pluggable architecture** where different settlement mechanisms can coexist. Each mechanism implements the same interface but handles attestation differently. Current implementations include:
+
+- **Direct Settlement**: Simple time-based finalization with dispute periods
+- **Hyperlane Settlement**: Cross-chain message-based attestations
+
+### Core Components
+
+**SettlementInterface Trait**: Defines the contract that all settlement implementations must fulfill, including methods for generating attestations, checking claim readiness, and optionally generating additional transactions for oracle coordination.
+
+**SettlementService**: Acts as a registry and router that maintains a collection of settlement implementations and directs orders to the appropriate settlement based on oracle addresses specified in the order.
+
+**Settlement Implementations**: Handle the specifics of their attestation mechanism. Direct settlement uses dispute periods and block timestamps, while Hyperlane settlement manages cross-chain message delivery and proof verification.
+
+**Oracle Configuration Management**: Handles the topology of oracles across chains, including which oracles exist on which chains, how they're connected through routes, and strategies for selecting between multiple oracles.
+
+### Integration Context
+
+Used by:
+
+- **solver-core**: Manages settlement lifecycle from fill attestation to claim execution
+- **solver-service**: Queries settlement service for valid oracle routes when generating quotes
+- **solver-storage**: Persists settlement state across solver restarts
+
+---
+
+## Settlement Process
+
+Settlement follows a multi-stage process that begins after an order has been filled on the destination chain.
+
+### Fill Attestation
+
+When an order is filled, the settlement system generates a proof of that fill. This proof, called a `FillProof`, contains all information necessary to verify the fill occurred and eventually claim rewards.
+
+#### FillProof Structure
+
+```rust
+pub struct FillProof {
+    pub tx_hash: String,              // Fill transaction hash
+    pub block_number: u64,            // Block containing fill
+    pub filled_timestamp: u64,        // Block timestamp
+    pub oracle_address: String,       // Oracle validating this fill
+    pub attestation_data: Option<Vec<u8>>,  // Settlement-specific data
+}
+```
+
+**Field Purposes:**
+
+- `tx_hash`: Identifies the specific fill transaction on the destination chain for verification
+- `block_number`: Provides timing information and allows verification of sufficient confirmations
+- `filled_timestamp`: Used for time-based checks like dispute periods (block timestamps, not block numbers, for cross-chain consistency)
+- `oracle_address`: Specifies which oracle validated or will validate this fill
+- `attestation_data`: Optional settlement-specific data (e.g., order ID for direct settlement, message ID for Hyperlane)
+
+#### Direct Settlement Attestation
+
+For direct settlement, attestation is straightforward:
+
+1. Verify transaction succeeded by checking receipt status
+2. Record block timestamp from block header
+3. Store order ID in attestation data
+4. No complex proofs or cross-chain coordination needed
+
+```rust
+async fn get_attestation(
+    &self,
+    order: &Order,
+    tx_hash: &TransactionHash,
+) -> Result<FillProof, SettlementError> {
+    let provider = self.providers.get(&order.destination_chain_id())?;
+    
+    // Fetch and validate receipt
+    let receipt = provider.get_transaction_receipt(tx_hash).await?;
+    if !receipt.status {
+        return Err(SettlementError::TransactionFailed("Fill tx reverted".to_string()));
+    }
+    
+    // Get block timestamp
+    let block = provider.get_block(receipt.block_number).await?;
+    let timestamp = block.timestamp;
+    
+    // Select oracle deterministically
+    let oracle = self.select_oracle_for_order(order)?;
+    
+    Ok(FillProof {
+        tx_hash: tx_hash.to_string(),
+        block_number: receipt.block_number,
+        filled_timestamp: timestamp,
+        oracle_address: oracle.to_string(),
+        attestation_data: Some(order.id.as_bytes().to_vec()),
+    })
+}
+```
+
+#### Hyperlane Settlement Attestation
+
+Hyperlane attestation involves additional steps:
+
+1. Extract details from `OutputFilled` event (solver identifier, fill timestamp)
+2. Prepare to track cross-chain message
+3. Select oracle deterministically using order hash
+4. Validate receipt contains expected events
+
+```rust
+async fn get_attestation(
+    &self,
+    order: &Order,
+    tx_hash: &TransactionHash,
+) -> Result<FillProof, SettlementError> {
+    let provider = self.providers.get(&order.destination_chain_id())?;
+    let receipt = provider.get_transaction_receipt(tx_hash).await?;
+    
+    // Parse OutputFilled event
+    let output_filled = self.parse_output_filled_event(&receipt)?;
+    
+    // Select oracle
+    let oracle = self.select_oracle_for_order(order)?;
+    
+    // Prepare message tracking
+    let message_key = format!("hyperlane:{}", order.id);
+    
+    Ok(FillProof {
+        tx_hash: tx_hash.to_string(),
+        block_number: receipt.block_number,
+        filled_timestamp: output_filled.timestamp,
+        oracle_address: oracle.to_string(),
+        attestation_data: Some(message_key.as_bytes().to_vec()),
+    })
+}
+```
+
+### Claim Readiness
+
+After attestation, the settlement system continuously monitors whether the order is ready to be claimed. Conditions vary by settlement type.
+
+#### Direct Settlement Claim Check
+
+Uses time-based approach with dispute period:
+
+```rust
+async fn can_claim(&self, order: &Order, fill_proof: &FillProof) -> bool {
+    let provider = match self.providers.get(&order.destination_chain_id()) {
+        Some(p) => p,
+        None => return false,  // Default to not ready on error
+    };
+    
+    // Get current block timestamp
+    let current_block = match provider.get_block_number().await {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    
+    let block = match provider.get_block(current_block).await {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    
+    // Check if dispute period has passed
+    let claim_time = fill_proof.filled_timestamp + self.dispute_period_seconds;
+    block.timestamp >= claim_time
+}
+```
+
+#### Hyperlane Settlement Claim Check
+
+Relies on message delivery confirmation:
+
+```rust
+async fn can_claim(&self, order: &Order, fill_proof: &FillProof) -> bool {
+    // Check if message is already marked as delivered in cache
+    if let Some(message) = self.message_tracker.get_message(&order.id).await {
+        if message.delivered {
+            return true;
+        }
+    }
+    
+    // Query oracle to check if proof is available
+    let provider = match self.providers.get(&order.origin_chain_id()) {
+        Some(p) => p,
+        None => return false,
+    };
+    
+    let oracle_contract = IInputOracle::new(fill_proof.oracle_address, provider);
+    
+    let is_proven = match oracle_contract
+        .isProven(
+            destination_domain,
+            output_oracle_address,
+            output_settler_address,
+            payload_hash,
+        )
+        .call()
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => return false,
+    };
+    
+    if is_proven {
+        // Update message tracker
+        self.message_tracker.mark_delivered(&order.id).await;
+    }
+    
+    is_proven
+}
+```
+
+### Optional Transactions
+
+Some settlement mechanisms require additional on-chain transactions beyond the initial fill.
+
+#### PostFill Transactions
+
+Execute after fill confirmation but before claim. For Hyperlane, this submits a cross-chain message containing fill details to the oracle system.
+
+```rust
+async fn generate_post_fill_transaction(
+    &self,
+    order: &Order,
+    fill_receipt: &TransactionReceipt,
+) -> Result<Option<Transaction>, SettlementError> {
+    // Parse fill event to get details
+    let output_filled = self.parse_output_filled_event(fill_receipt)?;
+    
+    // Encode fill details in Hyperlane format
+    let payload = self.encode_fill_payload(order, &output_filled)?;
+    
+    // Get gas quote for cross-chain delivery
+    let igp = self.get_igp_contract(order.destination_chain_id())?;
+    let gas_payment = igp.quoteGasPayment(
+        origin_domain,
+        self.default_gas_limit,
+    ).call().await?;
+    
+    // Get output oracle contract
+    let output_oracle = self.get_output_oracle(order)?;
+    
+    // Generate submit transaction
+    let tx = output_oracle.submit(
+        origin_domain,
+        input_oracle_bytes32,
+        self.default_gas_limit,
+        custom_metadata,
+        output_settler_address,
+        payload,
+    );
+    
+    Ok(Some(Transaction {
+        to: Some(output_oracle.address()),
+        data: tx.calldata().to_vec(),
+        value: gas_payment,
+        chain_id: order.destination_chain_id(),
+        ..Default::default()
+    }))
+}
+```
+
+**Gas Estimation**: PostFill transactions must pay for execution on the destination chain plus cross-chain message delivery. For Hyperlane, this involves calling the interchain gas paymaster's quote function.
+
+#### PreClaim Transactions
+
+Execute just before claiming rewards. Most settlements don't need this:
+
+- **Hyperlane**: No PreClaim needed (relayers handle message delivery automatically)
+- **Signature-based systems**: Might submit oracle signatures on-chain
+- **Optimistic systems**: Might finalize challenge periods
+- **State root systems**: Might submit merkle proofs
+
+```rust
+async fn generate_pre_claim_transaction(
+    &self,
+    order: &Order,
+    fill_proof: &FillProof,
+) -> Result<Option<Transaction>, SettlementError> {
+    // Most settlements return None
+    Ok(None)
+}
+```
+
+### Transaction Confirmation Handling
+
+When certain transactions are confirmed, settlement implementations may need to extract information from receipts.
+
+```rust
+async fn handle_transaction_confirmed(
+    &self,
+    order: &Order,
+    tx_type: TransactionType,
+    receipt: &TransactionReceipt,
+) -> Result<(), SettlementError> {
+    if tx_type == TransactionType::PostFill {
+        // Extract message ID from Dispatch event
+        let message_id = self.extract_message_id(receipt)?;
+        let payload_hash = self.compute_payload_hash(order)?;
+        
+        // Store in message tracker
+        self.message_tracker.track_message(
+            &order.id,
+            message_id,
+            payload_hash,
+            order.destination_chain_id(),
+        ).await?;
+    }
+    
+    Ok(())
+}
+```
+
+---
+
+## Integration Architecture
+
+The settlement crate integrates with several other components of the solver system.
+
+### Service Initialization
+
+Settlement implementations are created during solver startup through a factory pattern.
+
+#### Configuration Example
+
+```toml
+[settlement.implementations.direct]
+dispute_period_seconds = 300
+oracle_selection_strategy = "RoundRobin"
+
+[settlement.implementations.direct.oracles]
+input = { 84532 = ["0x1111111111111111111111111111111111111111"] }
+output = { 8453 = ["0x2222222222222222222222222222222222222222"] }
+
+[settlement.implementations.direct.routes]
+84532 = [8453]
+8453 = [84532]
+
+[settlement.implementations.hyperlane]
+default_gas_limit = 500000
+oracle_selection_strategy = "First"
+
+[settlement.implementations.hyperlane.oracles]
+input = { 84532 = ["0x3333333333333333333333333333333333333333"] }
+output = { 8453 = ["0x4444444444444444444444444444444444444444"] }
+
+[settlement.implementations.hyperlane.routes]
+84532 = [8453]
+8453 = [84532]
+
+[settlement.implementations.hyperlane.mailboxes]
+84532 = "0x5555555555555555555555555555555555555555"
+8453 = "0x6666666666666666666666666666666666666666"
+
+[settlement.implementations.hyperlane.igp_addresses]
+84532 = "0x7777777777777777777777777777777777777777"
+8453 = "0x8888888888888888888888888888888888888888"
+```
+
+**Configuration Structure:**
+
+- Each settlement implementation has its own section
+- Settlement names match registry names
+- Oracle addresses organized by chain ID
+- Multiple oracles per chain enable fallback options
+- Routes define supported chain pairs (bidirectional requires explicit routes)
+
+**Validation:**
+
+- Checked against each implementation's schema before initialization
+- Required fields must be present and within valid ranges
+- Dispute periods: 0-86400 seconds (24 hours)
+- Oracle addresses must be valid Ethereum addresses
+- Chain IDs must be positive integers
+
+### Oracle Routes
+
+The settlement service builds an aggregated view of all supported oracle routes.
+
+```rust
+pub struct OracleRoutes {
+    // Maps input oracle -> list of compatible output oracles
+    routes: HashMap<String, Vec<String>>,
+}
+```
+
+An oracle route represents a valid path for cross-chain communication, specifying an input oracle on the origin chain and an output oracle on the destination chain.
+
+**Route Merging:**
+
+Multiple settlement implementations can provide overlapping routes. The settlement service merges all routes into a single data structure used by other components.
+
+**Quote Generation:**
+
+When generating quotes, the solver queries the settlement service to find valid oracle pairs:
+
+```rust
+let oracle_pair = settlement_service.select_oracle_pair(
+    origin_chain_id,
+    destination_chain_id,
+)?;
+```
+
+### Storage Integration
+
+Settlement implementations that need to persist state use the storage service. This is particularly important for Hyperlane settlement, which must track message submission and delivery across solver restarts.
+
+**Storage Organization:**
+
+- Namespace: `SettlementMessages`
+- Keys: `{settlement_name}:{order_id}`
+- TTL: Delivered messages cleaned up after 7 days; pending messages have no TTL
+
+**Message Tracker Example:**
+
+```rust
+pub struct MessageTracker {
+    storage: Arc<StorageService>,
+    cache: RwLock<HashMap<String, PendingMessage>>,
+}
+
+impl MessageTracker {
+    pub async fn track_message(
+        &self,
+        order_id: &str,
+        message_id: FixedBytes<32>,
+        payload_hash: FixedBytes<32>,
+        destination_chain: u64,
+    ) -> Result<()> {
+        let message = PendingMessage {
+            message_id,
+            payload_hash,
+            destination_chain,
+            delivered: false,
+        };
+        
+        // Write to cache
+        self.cache.write().await.insert(order_id.to_string(), message.clone());
+        
+        // Persist to storage
+        let key = format!("hyperlane:{}", order_id);
+        self.storage.store_with_ttl(
+            StorageKey::SettlementMessages.as_str(),
+            &key,
+            &message,
+            None,
+            None,  // No TTL for pending messages
+        ).await?;
+        
+        Ok(())
+    }
+}
+```
+
+### Provider Management
+
+Each settlement implementation maintains a map of RPC providers keyed by chain ID.
+
+```rust
+pub struct DirectSettlement {
+    providers: HashMap<u64, DynProvider>,
+    oracle_config: OracleConfig,
+    dispute_period_seconds: u64,
+}
+
+impl DirectSettlement {
+    pub async fn new(
+        networks: &NetworksConfig,
+        oracle_config: OracleConfig,
+        dispute_period: u64,
+    ) -> Result<Self> {
+        let mut providers = HashMap::new();
+        
+        // Create providers only for configured chains
+        for chain_id in oracle_config.all_chain_ids() {
+            let provider = create_http_provider(chain_id, networks)?;
+            providers.insert(chain_id, provider);
+        }
+        
+        Ok(Self {
+            providers,
+            oracle_config,
+            dispute_period_seconds: dispute_period,
+        })
+    }
+}
+```
+
+---
+
+## Transaction Flow
+
+Understanding the sequence of operations from fill to claim helps integrate with settlement correctly.
+
+### Standard Flow
+
+```
+1. Order Filled on Destination Chain
+   ↓
+2. get_attestation() → FillProof
+   ↓
+3. generate_post_fill_transaction() → Option<Transaction>
+   ↓ (if Some)
+4. Submit PostFill Transaction
+   ↓
+5. handle_transaction_confirmed() (extract data)
+   ↓
+6. Poll can_claim() → bool
+   ↓ (when true)
+7. generate_pre_claim_transaction() → Option<Transaction>
+   ↓ (if Some)
+8. Submit PreClaim Transaction
+   ↓
+9. Submit Claim Transaction → Rewards
+```
+
+### Direct Settlement Flow
+
+Simplified flow without cross-chain messaging:
+
+1. **Fill confirmed** → Extract basic info from receipt
+2. **Attestation** → Verify transaction succeeded, record timestamp
+3. **No PostFill/PreClaim** → Optional transactions return None
+4. **Claim readiness** → Wait for dispute period to expire
+5. **Claim** → Order immediately claimable after dispute period
+
+### Hyperlane Settlement Flow
+
+Full flow with cross-chain coordination:
+
+1. **Fill confirmed** → Parse `OutputFilled` event
+2. **Attestation** → Record fill details, prepare message tracking
+3. **PostFill transaction** → Submit cross-chain message via Hyperlane mailbox
+4. **Extract message ID** → From `Dispatch` event in PostFill receipt
+5. **Relayers deliver message** → Automatic delivery to origin chain
+6. **Poll `isProven`** → Check if oracle has received proof
+7. **Claim ready** → Message proven on origin chain
+8. **Claim** → No PreClaim needed, proceed to claim
+
+---
+
+## Custom Settlement Implementation
+
+The settlement system supports custom implementations for different oracle protocols and attestation mechanisms.
+
+### Step 1: Implement SettlementInterface
+
+```rust
+use solver_settlement::{SettlementInterface, SettlementError};
+use solver_types::{Order, FillProof, Transaction, TransactionReceipt};
+
+pub struct MySettlement {
+    providers: HashMap<u64, DynProvider>,
+    oracle_config: OracleConfig,
+    timeout_seconds: u64,
+}
+
+#[async_trait]
+impl SettlementInterface for MySettlement {
+    fn oracle_config(&self) -> &OracleConfig {
+        &self.oracle_config
+    }
+
+    fn config_schema(&self) -> Box<dyn ConfigSchema> {
+        Box::new(MySettlementSchema)
+    }
+
+    async fn get_attestation(
+        &self,
+        order: &Order,
+        tx_hash: &TransactionHash,
+    ) -> Result<FillProof, SettlementError> {
+        let provider = self.providers.get(&order.destination_chain_id())?;
+        let receipt = provider.get_transaction_receipt(tx_hash).await?;
+
+        // Validate and extract data
+        // Return FillProof
+        Ok(FillProof {
+            tx_hash: tx_hash.to_string(),
+            block_number: receipt.block_number,
+            filled_timestamp: block.timestamp,
+            oracle_address: oracle.to_string(),
+            attestation_data: Some(custom_data),
+        })
+    }
+
+    async fn can_claim(&self, order: &Order, fill_proof: &FillProof) -> bool {
+        // Check your settlement conditions
+        // Return true if claimable, false otherwise
+        true
+    }
+
+    async fn generate_post_fill_transaction(
+        &self,
+        order: &Order,
+        fill_receipt: &TransactionReceipt,
+    ) -> Result<Option<Transaction>, SettlementError> {
+        // Generate transaction if needed, None otherwise
+        Ok(None)
+    }
+
+    async fn generate_pre_claim_transaction(
+        &self,
+        order: &Order,
+        fill_proof: &FillProof,
+    ) -> Result<Option<Transaction>, SettlementError> {
+        Ok(None)
+    }
+
+    async fn handle_transaction_confirmed(
+        &self,
+        order: &Order,
+        tx_type: TransactionType,
+        receipt: &TransactionReceipt,
+    ) -> Result<(), SettlementError> {
+        // Extract and store data if needed
+        Ok(())
+    }
+}
+```
+
+### Step 2: Define Configuration Schema
+
+```rust
+pub struct MySettlementSchema;
+
+impl ConfigSchema for MySettlementSchema {
+    fn validate(&self, config: &toml::Value) -> Result<(), ValidationError> {
+        let schema = Schema::new(
+            vec![
+                Field::new("timeout_seconds", FieldType::Integer {
+                    min: Some(0),
+                    max: Some(3600),
+                }),
+            ],
+            vec![
+                Field::new("optional_field", FieldType::Boolean),
+            ],
+        );
+
+        schema.validate(config)?;
+        
+        // Validate oracle configuration
+        parse_oracle_config(config)?;
+        
+        Ok(())
+    }
+}
+```
+
+### Step 3: Create Factory Function
+
+```rust
+pub fn create_settlement(
+    config: &toml::Value,
+    networks: &NetworksConfig,
+    storage: Arc<StorageService>,
+) -> Result<Box<dyn SettlementInterface>, SettlementError> {
+    // Validate configuration
+    MySettlementSchema.validate(config)
+        .map_err(|e| SettlementError::ValidationFailed(e.to_string()))?;
+
+    // Parse configuration
+    let oracle_config = parse_oracle_config(config)?;
+    let timeout = config.get("timeout_seconds")
+        .and_then(|v| v.as_integer())
+        .unwrap_or(300) as u64;
+
+    // Create settlement (async initialization)
+    let settlement = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            MySettlement::new(networks, oracle_config, timeout, storage).await
+        })
+    })?;
+
+    Ok(Box::new(settlement))
+}
+```
+
+### Step 4: Register Implementation
+
+```rust
+pub struct Registry;
+
+impl ImplementationRegistry for Registry {
+    const NAME: &'static str = "my_settlement";
+    type Factory = crate::SettlementFactory;
+
+    fn factory() -> Self::Factory {
+        create_settlement
+    }
+}
+
+impl SettlementRegistry for Registry {}
+
+// In lib.rs
+pub fn get_all_implementations() -> Vec<(&'static str, SettlementFactory)> {
+    use implementations::{direct, hyperlane, my_settlement};
+
+    vec![
+        (direct::Registry::NAME, direct::Registry::factory()),
+        (hyperlane::Registry::NAME, hyperlane::Registry::factory()),
+        (my_settlement::Registry::NAME, my_settlement::Registry::factory()),
+    ]
+}
+```
+
+### Step 5: Configure
+
+```toml
+[settlement.implementations.my_settlement]
+timeout_seconds = 600
+oracle_selection_strategy = "RoundRobin"
+
+[settlement.implementations.my_settlement.oracles]
+input = { 1 = ["0x..."] }
+output = { 137 = ["0x..."] }
+
+[settlement.implementations.my_settlement.routes]
+1 = [137]
+137 = [1]
+```
+
+### Error Handling
+
+**Be conservative in `can_claim`:**
+
+```rust
+async fn can_claim(&self, order: &Order, fill_proof: &FillProof) -> bool {
+    // Default to false on any error
+    let provider = match self.providers.get(&chain_id) {
+        Some(p) => p,
+        None => return false,  // Don't claim if provider missing
+    };
+
+    let result = match provider.some_query().await {
+        Ok(r) => r,
+        Err(_) => return false,  // Don't claim if query fails
+    };
+
+    // Only return true when confident
+    result.is_ready()
+}
+```
+
+**Handle RPC failures gracefully:**
+
+```rust
+// Don't propagate errors from can_claim
+// Return false to prevent premature claims
+match provider.get_block_number().await {
+    Ok(n) => n,
+    Err(e) => {
+        tracing::warn!("RPC error in can_claim: {}", e);
+        return false;
+    }
+}
+```
+
+### Storage Usage
+
+**Define clear key structure:**
+
+```rust
+// Good: Namespaced and identifiable
+let key = format!("{}:{}", settlement_name, order_id);
+
+// Bad: Ambiguous keys
+let key = order_id.to_string();
+```
+
+**Use appropriate TTLs:**
+
+```rust
+// Pending state: No TTL
+storage.store(&key, &data, None).await?;
+
+// Completed state: Clean up after reasonable period
+storage.store_with_ttl(
+    &key,
+    &data,
+    Some(Duration::from_secs(7 * 24 * 60 * 60)),  // 7 days
+).await?;
+```
+
+### Cross-Chain Messaging
+
+**Track message state carefully:**
+
+- Store message ID immediately after submission
+- Include payload hash for verification
+- Mark as delivered only after confirmation
+- Persist across restarts
+
+**Handle gas payments correctly:**
+
+```rust
+// Query gas oracle for accurate payment
+let gas_payment = igp.quoteGasPayment(
+    destination_domain,
+    gas_limit,
+).call().await?;
+
+// Add buffer for gas price fluctuations
+let gas_with_buffer = (gas_payment * 110) / 100;  // 10% buffer
+
+// Include in transaction value
+Transaction {
+    value: gas_with_buffer,
+    ..tx
+}
+```
+
+---
+
+## Related Documentation
+
+- [solver-core](/docs/solvers/crates/solver-core) - Manages settlement lifecycle
+- [solver-types](/docs/solvers/crates/solver-types) - Order and transaction types
+- [solver-config](/docs/solvers/crates/solver-config) - Settlement configuration
+- [solver-storage](/docs/solvers/crates/solver-storage) - State persistence
+- [solver-delivery](/docs/solvers/crates/solver-delivery) - Transaction submission
+

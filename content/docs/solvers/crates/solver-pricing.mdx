@@ -1,0 +1,439 @@
+---
+title: solver-pricing
+description: Pluggable pricing oracle system for asset conversions and cost estimation in OIF Solvers
+---
+
+## Overview
+
+The `solver-pricing` crate provides a pluggable pricing oracle system for the OIF solver infrastructure. Its primary responsibility is bridging the gap between blockchain-native units (wei) and human-readable fiat currencies (USD), enabling the solver to:
+
+- **Cost estimation**: Convert gas costs from wei to display currencies for quote generation
+- **Profitability analysis**: Calculate profit margins by pricing token amounts across different assets
+- **Multi-asset pricing**: Support conversions between various cryptocurrencies and fiat pairs
+
+This crate sits at the intersection of strategy execution and financial decision-making. When the solver evaluates whether to execute an order, it needs accurate pricing data to determine if the transaction is profitable after accounting for gas costs, commissions, and slippage buffers.
+
+### Design Philosophy
+
+The crate follows three core principles:
+
+1. **Implementation agnostic**: The `PricingInterface` trait allows swapping between different pricing implementations without changing dependent code
+2. **Failure isolation**: Pricing errors are contained and explicitly typed, preventing cascading failures in the solver pipeline
+3. **Configuration-driven**: All implementations self-register and validate their configuration schemas, enabling runtime flexibility
+
+### Where It Fits
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    solver-service                           │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │              Solver Engine (solver-core)               │ │
+│  │                                                        │ │
+│  │  ┌──────────────────────────────────────────────────┐  │ │
+│  │  │         CostProfitService                        │  │ │
+│  │  │  • Estimates execution costs                     │  │ │
+│  │  │  • Validates order profitability                 │  │ │
+│  │  │  • Applies commission & buffer calculations      │  │ │
+│  │  └──────────────┬───────────────────────────────────┘  │ │
+│  │                 │                                      │ │
+│  │                 ▼                                      │ │
+│  │  ┌──────────────────────────────────────────────────┐  │ │
+│  │  │         PricingService (solver-pricing)          │  │ │
+│  │  │  • wei ↔ USD conversions                         │  │ │
+│  │  │  • Asset price lookups (ETH, SOL, tokens)        │  │ │
+│  │  └──────────────┬───────────────────────────────────┘  │ │
+│  │                 │                                      │ │
+│  │                 ▼                                      │ │
+│  │  ┌──────────────────────────────────────────────────┐  │ │
+│  │  │      PricingInterface Implementation             │  │ │
+│  │  │      (CoinGeckoPricing | Custom)                 |  │ │
+│  │  └──────────────────────────────────────────────────┘  │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Core Abstractions and Traits
+
+### The PricingInterface Trait
+
+The `PricingInterface` trait (`lib.rs`) defines the contract all pricing implementations must fulfill:
+
+```rust
+#[async_trait]
+pub trait PricingInterface: Send + Sync {
+    fn config_schema(&self) -> Box<dyn ConfigSchema>;
+
+    async fn get_supported_pairs(&self) -> Vec<TradingPair>;
+
+    async fn convert_asset(
+        &self,
+        from_asset: &str,
+        to_asset: &str,
+        amount: &str,
+    ) -> Result<String, PricingError>;
+
+    async fn wei_to_currency(
+        &self,
+        wei_amount: &str,
+        currency: &str,
+    ) -> Result<String, PricingError>;
+
+    async fn currency_to_wei(
+        &self,
+        currency_amount: &str,
+        currency: &str,
+    ) -> Result<String, PricingError>;
+}
+
+```
+
+### Method Breakdown
+
+**`config_schema()`**
+Returns validation rules for this implementation's configuration. The schema validates TOML config before instantiation, catching errors at startup rather than runtime. See `coingecko.rs:` for the CoinGecko schema implementation.
+
+**`get_supported_pairs()`**
+Lists all trading pairs this implementation can price (e.g., ETH/USD, SOL/USD). Used for capability discovery and validation.
+
+**`convert_asset()`**
+Core conversion method. Converts an amount from one asset to another:
+
+- Direct pairs: ETH → USD
+
+The method accepts string amounts to avoid precision loss in large wei values or small decimal amounts.
+
+**`wei_to_currency()`**
+Specialized method for gas cost display. Converts wei (10^18 wei = 1 ETH) to a target currency. This is called during quote generation to show users estimated gas costs in familiar terms.
+
+**`currency_to_wei()`**
+Inverse operation. Converts a currency amount to wei. Used when the solver needs to reserve or allocate ETH based on fiat-denominated budgets.
+
+### Error Handling
+
+All methods return `Result<String, PricingError>` where `PricingError` (from `solver-types/pricing.rs`) has three variants:
+
+- `PriceNotAvailable`: The requested asset pair isn't supported
+- `Network`: Communication failure with external price sources
+- `InvalidData`: Malformed input or corrupted price data
+
+This explicit error typing allows callers to distinguish transient failures (network) from permanent ones (unsupported pair).
+
+### The Factory Pattern
+
+Each implementation provides a factory function that constructs instances from TOML configuration:
+
+```rust
+pub type PricingFactory = fn(&toml::Value) -> Result<Box<dyn PricingInterface>, PricingError>;
+
+```
+
+Example from `coingecko.rs:640-645`:
+
+```rust
+pub fn create_coingecko_pricing(
+    config: &toml::Value,
+) -> Result<Box<dyn PricingInterface>, PricingError> {
+    Ok(Box::new(CoinGeckoPricing::new(config)?))
+}
+
+```
+
+The factory validates configuration, initializes HTTP clients, builds token mappings, and returns a boxed trait object. This indirection enables:
+
+1. **Late binding**: The solver service selects implementations at runtime based on config
+2. **Testability**: Tests inject mock factories without modifying production code
+3. **Plugin architecture**: New implementations integrate by adding a factory to the registry
+
+### Registry System
+
+The `PricingRegistry` trait (`lib.rs:55`) combines with `ImplementationRegistry` (from `solver-types`) to create a self-registration system:
+
+```rust
+pub trait PricingRegistry: ImplementationRegistry<Factory = PricingFactory> {}
+
+impl ImplementationRegistry for CoinGeckoPricingRegistry {
+    const NAME: &'static str = "coingecko";
+    type Factory = PricingFactory;
+
+    fn factory() -> Self::Factory {
+        create_coingecko_pricing
+    }
+}
+
+```
+
+The `get_all_implementations()` function (`lib.rs:64-76`) collects all registries:
+
+```rust
+pub fn get_all_implementations() -> Vec<(&'static str, PricingFactory)> {
+    vec![
+        ("mock", MockPricingRegistry::factory()),
+        ("coingecko", CoinGeckoPricingRegistry::factory()),
+    ]
+}
+
+```
+
+This list is consumed by the solver service's factory registry to build a name-to-factory lookup table. When the config specifies `pricing.implementation = "coingecko"`, the service calls the corresponding factory.
+
+### PricingService Wrapper
+
+The `PricingService` struct (`lib.rs:134-203`) wraps a `PricingInterface` implementation and adds configuration management:
+
+```rust
+pub struct PricingService {
+    implementation: Box<dyn PricingInterface>,
+    config: PricingConfig,
+}
+
+```
+
+## Integration Architecture
+
+### Configuration Flow
+
+The pricing system is configured via TOML and follows this initialization flow:
+
+```
+config/demo.toml
+    ↓
+[pricing]
+implementation = "coingecko"
+    ↓
+solver-service reads config
+    ↓
+Calls get_all_implementations() to build registry
+    ↓
+Looks up "coingecko" factory
+    ↓
+Invokes factory with config:
+[pricing.implementations.coingecko]
+api_key = "..."
+cache_duration_seconds = 60
+custom_prices = { ETH = "3000" }
+    ↓
+Returns Box<dyn PricingInterface>
+    ↓
+Wraps in PricingService with PricingConfig
+    ↓
+Injects into CostProfitService via Arc<PricingService>
+
+```
+
+### TOML Configuration Example
+
+```toml
+[pricing]
+implementation = "coingecko"
+pricing_currency = "USD"
+commission_bps = 20            # 0.20%
+gas_buffer_bps = 1000          # 10%
+rate_buffer_bps = 14           # 0.14%
+enable_live_gas_estimate = false
+
+[pricing.implementations.coingecko]
+api_key = "CG-abc123..."       # Optional, uses free tier if omitted
+base_url = "<https://pro-api.coingecko.com/api/v3>"
+cache_duration_seconds = 60
+rate_limit_delay_ms = 100
+
+# Custom fixed prices override API calls (useful for demos/testing)
+[pricing.implementations.coingecko.custom_prices]
+ETH = "3000.50"
+SOL = "150.00"
+
+# Extend token → CoinGecko ID mappings
+[pricing.implementations.coingecko.token_id_map]
+MYTOKEN = "my-token-id"
+```
+
+The `PricingConfig::from_table()` method (`lib.rs:105-131`) extracts the top-level pricing settings, while each implementation's constructor parses its nested configuration.
+
+### Integration with CostProfitService
+
+The `CostProfitService` (in `solver-core/engine/cost_profit.rs`) is the primary consumer of pricing data. Here's how it uses `PricingService`:
+
+```rust
+pub struct CostProfitService {
+    pricing_service: Arc<PricingService>,
+    delivery_service: Arc<DeliveryService>,
+    token_manager: Arc<TokenManager>,
+    storage_service: Arc<StorageService>,
+}
+
+```
+
+**Typical usage pattern**:
+
+1. **Gas cost estimation**:
+   - Delivery service provides gas estimate in wei
+   - `pricing_service.wei_to_currency(wei, "USD")` converts to display currency
+   - Result included in quote response
+2. **Profitability check**:
+   - Token amounts extracted from order inputs/outputs
+   - `pricing_service.convert_asset("ETH", "USD", amount)` prices each side
+   - Compare: `(output_value - input_value - gas_cost) > minimum_profit`
+3. **Commission calculation**:
+   - Apply `commission_bps` from `PricingConfig`
+   - `pricing_service.config().commission_bps` accessed via getter
+
+The `Arc<PricingService>` is shared across async tasks, making pricing data accessible anywhere in the engine without re-fetching.
+
+### Type Dependencies
+
+```
+solver-pricing
+    ├── depends on: solver-types
+    │   ├── TradingPair
+    │   ├── PricingError
+    │   ├── ConfigSchema
+    │   ├── ImplementationRegistry
+    │   └── Validation utilities
+    │
+    ├── used by: solver-core
+    │   └── CostProfitService wraps Arc<PricingService>
+    │
+    └── used by: solver-service
+        └── FactoryRegistry builds PricingService from config
+
+```
+
+This dependency structure keeps pricing logic isolated while making it accessible throughout the stack.
+
+## Internal Flow Diagrams
+
+### Request Flow: wei_to_currency
+
+```
+User calls PricingService::wei_to_currency("1000000000000000000", "USD")
+    ↓
+PricingService delegates to implementation.wei_to_currency(...)
+    ↓
+┌────────────────────────────────────────────────────────────┐
+│           CoinGeckoPricing::wei_to_currency                │
+│                                                            │
+│  1. Convert wei → ETH                                      │
+│     wei_string_to_eth_string("1000000000000000000")        │
+│     → "1.0"                                                │
+│                                                            │
+│  2. Check cache for ETH/USD                                │
+│     cache_key = "ETH/USD"                                  │
+│     if cached && !expired: return cached price             │
+│                                                            │
+│  3. Check custom_prices map                                │
+│     if custom_prices.contains("ETH"): return custom        │
+│                                                            │
+│  4. Apply rate limiting                                    │
+│     calculate time since last API call                     │
+│     if elapsed < rate_limit_delay_ms: sleep(remaining)     │
+│                                                            │
+│  5. Fetch from CoinGecko API                               │
+│     GET /simple/price?ids=ethereum&vs_currencies=usd       │
+│     parse JSON response                                    │
+│                                                            │
+│  6. Update cache                                           │
+│     cache.insert("ETH/USD", PriceCacheEntry {              │
+│         price: "3000.00",                                  │
+│         timestamp: now()                                   │
+│     })                                                     │
+│                                                            │
+│  7. Calculate result                                       │
+│     1.0 ETH * $3000.00 = $3000.00                          │
+│     round to 2 decimal places → "3000.00"                  │
+└────────────────────────────────────────────────────────────┘
+    ↓
+Return "3000.00" to caller
+
+```
+
+### Caching Strategy
+
+The `CoinGeckoPricing` implementation uses a `HashMap`-based cache with RwLock for concurrency:
+
+```rust
+price_cache: Arc<RwLock<HashMap<String, PriceCacheEntry>>>
+
+struct PriceCacheEntry {
+    price: String,
+    timestamp: u64,  // Unix seconds
+}
+
+```
+
+**Cache behavior** (`coingecko.rs:276-362`):
+
+- **Key format**: `"{TOKEN}/{CURRENCY}"` (e.g., `"ETH/USD"`)
+- **TTL**: Configurable via `cache_duration_seconds` (default 60s)
+- **Read path**:
+  1. Acquire read lock
+  2. Check if entry exists and `now - timestamp < cache_duration`
+  3. If valid, return cached price immediately
+- **Write path**:
+  1. Fetch from API (after rate limiting)
+  2. Acquire write lock
+  3. Insert new entry with current timestamp
+
+**Why this design?**
+
+- Multiple concurrent readers don't block (RwLock)
+- Cache hits avoid expensive API calls and rate limit delays
+- TTL prevents stale prices from being used indefinitely
+- Cache is per-instance, so multiple solver instances maintain separate caches
+
+### Rate Limiting
+
+CoinGecko (and most pricing APIs) enforce rate limits. The implementation handles this in `apply_rate_limit()` (`coingecko.rs:201-224`):
+
+```rust
+last_api_call: Arc<RwLock<Option<u64>>>  // Timestamp in milliseconds
+
+async fn apply_rate_limit(&self) {
+    let mut last_call = self.last_api_call.write().await;
+
+    if let Some(last_timestamp) = *last_call {
+        let now = current_time_millis();
+        let elapsed = now - last_timestamp;
+
+        if elapsed < self.rate_limit_delay_ms {
+            let delay = self.rate_limit_delay_ms - elapsed;
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+    }
+
+    *last_call = Some(current_time_millis());
+}
+```
+
+The `rate_limit_delay_ms` is auto-configured based on whether an `api_key` is provided.
+
+### Adding New Conversion Methods
+
+If you need specialized conversions (e.g., `token_amount_to_currency` that includes decimals lookup), add them to `PricingService`:
+
+```rust
+impl PricingService {
+    pub async fn token_amount_to_currency(
+        &self,
+        token_address: &Address,
+        raw_amount: &U256,
+        currency: &str,
+    ) -> Result<String, PricingError> {
+        // 1. Lookup token decimals from registry
+        // 2. Convert raw_amount to decimal string
+        // 3. Lookup token symbol
+        // 4. Call convert_asset(symbol, currency, amount)
+        todo!()
+    }
+}
+```
+
+This keeps implementation-specific details encapsulated while providing higher-level APIs to consumers.
+gi
+---
+
+## Related Documentation
+
+- [solver-core](/docs/solvers/crates/solver-core) - Uses pricing for cost calculations and profitability checks
+- [solver-types](/docs/solvers/crates/solver-types) - Cost breakdown and pricing interface definitions
+- [solver-config](/docs/solvers/crates/solver-config) - Pricing service configuration management
+- [solver-order](/docs/solvers/crates/solver-order) - Execution strategies that use pricing data

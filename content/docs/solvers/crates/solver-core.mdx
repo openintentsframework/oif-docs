@@ -1,0 +1,1156 @@
+---
+title: solver-core
+description: Central orchestration engine coordinating the complete lifecycle of cross-chain orders
+---
+
+## Overview
+
+The `solver-core` crate is the orchestration engine of the OIF Solver system. It coordinates the complete lifecycle of cross-chain orders, from intent discovery through final settlement and claiming. The crate implements an event-driven architecture that manages asynchronous processing across multiple blockchain networks.
+
+### Core Responsibilities
+
+- **Order Lifecycle Management**: Coordinates prepare → fill → settle → claim flow
+- **Event Orchestration**: Routes lifecycle events to specialized handlers
+- **State Management**: Maintains order state with validated transitions
+- **Cost Estimation**: Calculates gas costs and validates profitability
+- **Recovery**: Restores operational state after unexpected shutdowns
+- **Token Management**: Handles ERC20 approvals across multiple chains
+
+### Design Philosophy
+
+The crate follows an event-driven, handler-based architecture that enables:
+
+- **Loose Coupling**: Services communicate through events, not direct calls
+- **Concurrent Processing**: Non-dependent operations run in parallel
+- **Fault Tolerance**: Handler failures don't crash the engine
+- **Extensibility**: New handlers and services can be added without core changes
+
+### Integration Context
+
+The engine is used by:
+
+- **solver-service**: HTTP service wraps engine for API endpoints
+- **solver-demo**: CLI tools use engine for demonstrations
+- **Tests**: Builder pattern enables comprehensive testing
+
+---
+
+## Core Abstractions and Traits
+
+### SolverEngine
+
+The main orchestrator that coordinates all services and manages the event loop.
+
+```rust
+#[derive(Clone)]
+pub struct SolverEngine {
+    config: Config,
+    storage: Arc<StorageService>,
+    account: Arc<AccountService>,
+    delivery: Arc<DeliveryService>,
+    discovery: Arc<DiscoveryService>,
+    order: Arc<OrderService>,
+    settlement: Arc<SettlementService>,
+    pricing: Arc<PricingService>,
+    token_manager: Arc<TokenManager>,
+    event_bus: EventBus,
+    state_machine: Arc<OrderStateMachine>,
+    // Specialized handlers
+    intent_handler: Arc<IntentHandler>,
+    order_handler: Arc<OrderHandler>,
+    transaction_handler: Arc<TransactionHandler>,
+    settlement_handler: Arc<SettlementHandler>,
+}
+```
+
+**Key Methods:**
+
+- `new()`: Constructs engine with all services and handlers
+- `run()`: Starts the main event loop with recovery
+- `event_bus()`: Returns reference to event bus for external subscriptions
+- `initialize_with_recovery()`: Performs state recovery from storage
+
+### EventBus
+
+Broadcast-based communication system for inter-service coordination.
+
+```rust
+pub struct EventBus {
+    sender: broadcast::Sender<SolverEvent>,
+}
+```
+
+**Key Methods:**
+
+- `new(capacity: usize)`: Creates bus with specified event buffer size (default: 1000)
+- `subscribe()`: Returns receiver for listening to all events
+- `publish(event: SolverEvent)`: Broadcasts event to all subscribers
+
+**Event Types:**
+
+```rust
+pub enum SolverEvent {
+    Discovery(DiscoveryEvent),  // Intent discovery and validation
+    Order(OrderEvent),           // Order preparation and execution
+    Delivery(DeliveryEvent),     // Transaction lifecycle
+    Settlement(SettlementEvent), // Settlement and claiming
+}
+```
+
+### OrderStateMachine
+
+Enforces valid state transitions with compile-time guarantees.
+
+```rust
+pub struct OrderStateMachine {
+    storage: Arc<StorageService>,
+}
+```
+
+#### State Transition Graph
+
+```
+Created → Pending → Executing → Executed → Settled → Finalized
+    ↓         ↓         ↓           ↓          ↓         ↓
+                    Failed(TransactionType)
+
+Optional branches:
+- Executed → PostFilled → Settled
+- Settled → PreClaimed → Finalized
+```
+
+**Key Methods:**
+
+- `store_order(order: &Order)`: Stores new order with indexed status
+- `transition_order_status(order_id, new_status)`: Validates and applies state change
+- `update_order_with(order_id, closure)`: Atomic read-modify-write with closure
+- `set_transaction_hash(order_id, tx_hash, tx_type)`: Updates tx hash by type
+- `set_fill_proof(order_id, proof)`: Stores attestation proof
+
+**Transition Validation:**
+
+The state machine maintains a static transition table that defines valid state changes:
+
+```rust
+// Example transitions
+Created → [Pending, Executing, Failed]
+Pending → [Executing, Failed]
+Executing → [Executed, Failed]
+Executed → [PostFilled, Settled, Failed]
+PostFilled → [Settled, Failed]
+Settled → [PreClaimed, Finalized, Failed]
+PreClaimed → [Finalized, Failed]
+```
+
+Invalid transitions are rejected at runtime with `InvalidTransition` error.
+
+---
+
+## Handler Architecture
+
+### IntentHandler
+
+Validates discovered intents and creates orders.
+
+```rust
+pub struct IntentHandler {
+    order_service: Arc<OrderService>,
+    storage: Arc<StorageService>,
+    state_machine: Arc<OrderStateMachine>,
+    event_bus: EventBus,
+    cost_profit_service: Arc<CostProfitService>,
+    processed_intents: Arc<RwLock<LruCache<String, ()>>>,
+}
+```
+
+**Key capabilities:**
+- Two-layer deduplication (memory cache + persistent storage)
+- Order creation and validation
+- Profitability checking
+- Strategy decision (execute/skip/defer)
+
+**Processing Flow:**
+
+```rust
+pub async fn handle_intent(&self, intent: Intent) -> Result<()> {
+    // 1. Check deduplication
+    if self.is_duplicate(&intent.id) {
+        return Ok(());
+    }
+    
+    // 2. Create order from intent
+    let order = self.order_service.validate_and_create_order(intent)?;
+    
+    // 3. Store order
+    self.state_machine.store_order(&order).await?;
+    
+    // 4. Check profitability
+    let cost = self.cost_profit_service.estimate_cost_for_order(&order, &self.config).await?;
+    let is_profitable = self.cost_profit_service.validate_profitability(&order, &cost, threshold)?;
+    
+    // 5. Emit decision event
+    if is_profitable {
+        self.event_bus.publish(SolverEvent::Order(OrderEvent::Preparing {
+            intent, order, params
+        }))?;
+    } else {
+        self.event_bus.publish(SolverEvent::Order(OrderEvent::Skipped {
+            order_id: order.id,
+            reason: "Not profitable".to_string()
+        }))?;
+    }
+    
+    Ok(())
+}
+```
+
+### OrderHandler
+
+Manages transaction generation and submission.
+
+```rust
+pub struct OrderHandler {
+    order_service: Arc<OrderService>,
+    delivery: Arc<DeliveryService>,
+    storage: Arc<StorageService>,
+    state_machine: Arc<OrderStateMachine>,
+    event_bus: EventBus,
+}
+```
+
+**Key capabilities:**
+- Prepare transaction generation (off-chain intents)
+- Fill transaction generation (all orders)
+- Transaction monitoring setup
+- State updates on submission
+
+**Prepare Transaction Flow:**
+
+```rust
+pub async fn handle_preparing(&self, order: Order) -> Result<()> {
+    // Check if prepare transaction needed
+    if order.source == "off-chain" && !order.lock_type.is_compact() {
+        // Generate prepare transaction
+        let tx = self.order_service.generate_prepare_transaction(&order)?;
+        
+        // Update state
+        self.state_machine.transition_order_status(&order.id, OrderStatus::Pending).await?;
+        
+        // Submit with monitoring
+        let tracking = TransactionTracking {
+            id: order.id.clone(),
+            tx_type: TransactionType::Prepare,
+            callback: Box::new(move |event| {
+                // Publish delivery event
+            }),
+        };
+        
+        let tx_hash = self.delivery.deliver(tx, Some(tracking)).await?;
+        self.state_machine.set_transaction_hash(&order.id, tx_hash, TransactionType::Prepare).await?;
+    } else {
+        // Skip prepare, go directly to execution
+        self.event_bus.publish(SolverEvent::Order(OrderEvent::Executing {
+            order, params
+        }))?;
+    }
+    
+    Ok(())
+}
+```
+
+**Fill Transaction Flow:**
+
+```rust
+pub async fn handle_executing(&self, order: Order) -> Result<()> {
+    // Generate fill transaction
+    let tx = self.order_service.generate_fill_transaction(&order)?;
+    
+    // Update state
+    self.state_machine.transition_order_status(&order.id, OrderStatus::Executing).await?;
+    
+    // Submit with monitoring
+    let tracking = TransactionTracking {
+        id: order.id.clone(),
+        tx_type: TransactionType::Fill,
+        callback: Box::new(move |event| {
+            // Publish delivery event
+        }),
+    };
+    
+    let tx_hash = self.delivery.deliver(tx, Some(tracking)).await?;
+    self.state_machine.set_transaction_hash(&order.id, tx_hash, TransactionType::Fill).await?;
+    
+    Ok(())
+}
+```
+
+### TransactionHandler
+
+Routes transaction confirmations to appropriate handlers.
+
+```rust
+pub struct TransactionHandler {
+    storage: Arc<StorageService>,
+    state_machine: Arc<OrderStateMachine>,
+    settlement: Arc<SettlementService>,
+    event_bus: EventBus,
+}
+```
+
+**Confirmation Routing:**
+
+```rust
+pub async fn handle_transaction_confirmed(
+    &self,
+    order_id: String,
+    tx_type: TransactionType,
+    receipt: TransactionReceipt,
+) -> Result<()> {
+    match tx_type {
+        TransactionType::Prepare => {
+            // Prepare confirmed, trigger fill
+            self.state_machine.transition_order_status(&order_id, OrderStatus::Pending).await?;
+            
+            let order = self.storage.retrieve("orders", &order_id).await?;
+            self.event_bus.publish(SolverEvent::Order(OrderEvent::Executing {
+                order, params
+            }))?;
+        }
+        
+        TransactionType::Fill => {
+            // Fill confirmed, trigger settlement
+            self.state_machine.transition_order_status(&order_id, OrderStatus::Executed).await?;
+            
+            self.event_bus.publish(SolverEvent::Settlement(
+                SettlementEvent::PostFillReady { order_id }
+            ))?;
+        }
+        
+        TransactionType::PostFill => {
+            // PostFill confirmed, notify settlement and start monitoring
+            let order = self.storage.retrieve("orders", &order_id).await?;
+            self.settlement.handle_transaction_confirmed(&order, tx_type, &receipt).await?;
+            
+            self.event_bus.publish(SolverEvent::Settlement(
+                SettlementEvent::StartMonitoring {
+                    order_id: order_id.clone(),
+                    fill_tx_hash: order.fill_tx_hash.unwrap_or_default(),
+                }
+            ))?;
+        }
+        
+        TransactionType::PreClaim => {
+            // PreClaim confirmed, trigger claim
+            self.event_bus.publish(SolverEvent::Settlement(
+                SettlementEvent::ClaimReady { order_id }
+            ))?;
+        }
+        
+        TransactionType::Claim => {
+            // Claim confirmed, finalize order
+            self.state_machine.transition_order_status(&order_id, OrderStatus::Finalized).await?;
+            
+            self.event_bus.publish(SolverEvent::Settlement(
+                SettlementEvent::Completed { order_id }
+            ))?;
+        }
+    }
+    
+    Ok(())
+}
+```
+
+### SettlementHandler
+
+Coordinates settlement lifecycle.
+
+```rust
+pub struct SettlementHandler {
+    settlement: Arc<SettlementService>,
+    order_service: Arc<OrderService>,
+    delivery: Arc<DeliveryService>,
+    storage: Arc<StorageService>,
+    state_machine: Arc<OrderStateMachine>,
+    event_bus: EventBus,
+}
+```
+
+**PostFill Handling:**
+
+```rust
+pub async fn handle_post_fill_ready(&self, order_id: String) -> Result<()> {
+    let order = self.storage.retrieve("orders", &order_id).await?;
+    
+    // Get fill receipt
+    let fill_tx_hash = order.fill_tx_hash.ok_or("No fill tx hash")?;
+    let receipt = self.delivery.get_receipt(&fill_tx_hash, order.destination_chain_id()).await?;
+    
+    // Check if post-fill transaction needed
+    let post_fill_tx = self.settlement.generate_post_fill_transaction(&order, &receipt).await?;
+    
+    match post_fill_tx {
+        Some(tx) => {
+            // Submit post-fill transaction
+            self.state_machine.transition_order_status(&order_id, OrderStatus::PostFilled).await?;
+            
+            let tracking = TransactionTracking {
+                id: order_id.clone(),
+                tx_type: TransactionType::PostFill,
+                callback: Box::new(move |event| { /* ... */ }),
+            };
+            
+            let tx_hash = self.delivery.deliver(tx, Some(tracking)).await?;
+            self.state_machine.set_transaction_hash(&order_id, tx_hash, TransactionType::PostFill).await?;
+        }
+        None => {
+            // No post-fill needed, start monitoring directly
+            self.event_bus.publish(SolverEvent::Settlement(
+                SettlementEvent::StartMonitoring {
+                    order_id,
+                    fill_tx_hash: fill_tx_hash.to_string(),
+                }
+            ))?;
+        }
+    }
+    
+    Ok(())
+}
+```
+
+**Claim Handling:**
+
+```rust
+pub async fn handle_claim_ready(&self, order_id: String) -> Result<()> {
+    let order = self.storage.retrieve("orders", &order_id).await?;
+    
+    // Batch multiple claims together (future optimization)
+    let claims = vec![order];
+    
+    for order in claims {
+        // Generate claim transaction
+        let tx = self.order_service.generate_claim_transaction(&order)?;
+        
+        let tracking = TransactionTracking {
+            id: order.id.clone(),
+            tx_type: TransactionType::Claim,
+            callback: Box::new(move |event| { /* ... */ }),
+        };
+        
+        let tx_hash = self.delivery.deliver(tx, Some(tracking)).await?;
+        self.state_machine.set_transaction_hash(&order.id, tx_hash, TransactionType::Claim).await?;
+    }
+    
+    Ok(())
+}
+```
+
+### TokenManager
+
+Manages ERC20 approvals and balances across chains.
+
+```rust
+pub struct TokenManager {
+    networks: NetworksConfig,
+    delivery: Arc<DeliveryService>,
+    account: Arc<AccountService>,
+}
+```
+
+**Key Methods:**
+
+- `ensure_approvals()`: Sets MAX_UINT256 approvals for all configured tokens
+- `check_balances()`: Returns solver balances for all configured tokens
+- `get_token_info(chain_id, token_address)`: Returns token configuration
+- `is_supported(chain_id, token_address)`: Checks if token is configured
+
+**Approval Strategy:**
+
+```rust
+pub async fn ensure_approvals(&self) -> Result<Vec<ApprovalResult>> {
+    let solver_address = self.account.get_address().await?;
+    let mut results = Vec::new();
+    
+    for (chain_id, network) in &self.networks.0 {
+        for token in &network.tokens {
+            // Skip if settler is zero address
+            if network.input_settler_address == "0x0000000000000000000000000000000000000000" {
+                continue;
+            }
+            
+            // Check existing allowance
+            let allowance = self.delivery.get_allowance(
+                *chain_id,
+                solver_address,
+                network.input_settler_address.parse()?,
+                token.address.parse()?,
+            ).await?;
+            
+            // If already approved, skip
+            if allowance.parse::<u128>()? == u128::MAX {
+                results.push(ApprovalResult::AlreadyApproved);
+                continue;
+            }
+            
+            // Generate approval transaction
+            let approve_data = encode_approve(
+                network.input_settler_address.parse()?,
+                U256::MAX,
+            );
+            
+            let tx = Transaction {
+                chain_id: *chain_id,
+                to: Some(token.address.parse()?),
+                data: approve_data,
+                value: U256::ZERO,
+                gas_limit: Some(100_000),
+                ..Default::default()
+            };
+            
+            // Submit approval
+            let tx_hash = self.delivery.deliver(tx, None).await?;
+            results.push(ApprovalResult::Approved { tx_hash });
+        }
+    }
+    
+    Ok(results)
+}
+```
+
+The manager sets unlimited (MAX_UINT256) approvals once during initialization:
+- Approves input settler for all input tokens
+- Approves output settler for all output tokens
+- Skips zero-address settlers
+- Checks existing allowance before submitting
+
+### CostProfitService
+
+Unified service for cost estimation and profitability validation.
+
+```rust
+pub struct CostProfitService {
+    pricing_service: Arc<PricingService>,
+    delivery_service: Arc<DeliveryService>,
+    token_manager: Arc<TokenManager>,
+    storage_service: Arc<StorageService>,
+}
+```
+
+**Key Methods:**
+
+- `calculate_cost_context(request, context, config)`: Full cost calculation for quotes
+- `estimate_cost_for_order(order, config)`: Estimates cost for existing order
+- `validate_profitability(order, cost_breakdown, threshold)`: Validates profit margin
+- `calculate_swap_amounts(request, context)`: Calculates missing input/output amounts
+
+**Cost Breakdown Structure:**
+
+```rust
+pub struct CostBreakdown {
+    gas_open: Decimal,           // Prepare transaction gas
+    gas_fill: Decimal,           // Fill transaction gas
+    gas_claim: Decimal,          // Claim transaction gas
+    gas_buffer: Decimal,         // 10% safety margin
+    rate_buffer: Decimal,        // Future: exchange rate buffer
+    base_price: Decimal,         // Cover negative spread
+    min_profit: Decimal,         // Minimum profit requirement
+    operational_cost: Decimal,   // Total gas + buffers
+    subtotal: Decimal,           // operational_cost + base_price
+    total: Decimal,              // Final cost (excluding min_profit)
+    currency: String,            // "USD"
+}
+```
+
+### RecoveryService
+
+Restores solver state after unexpected shutdowns.
+
+```rust
+pub struct RecoveryService {
+    storage: Arc<StorageService>,
+    state_machine: Arc<OrderStateMachine>,
+    delivery: Arc<DeliveryService>,
+    settlement: Arc<SettlementService>,
+    event_bus: EventBus,
+}
+```
+
+**Key Methods:**
+
+- `recover_state()`: Performs complete recovery and returns report
+- `load_active_orders()`: Queries non-terminal orders from storage
+- `recover_orphaned_intents()`: Finds intents without corresponding orders
+- `reconcile_with_blockchain(order)`: Checks transaction status on-chain
+
+**Reconciliation Strategy:**
+
+Checks transactions in reverse order to find most advanced state:
+
+```rust
+pub async fn reconcile_with_blockchain(&self, order: &Order) -> Result<ReconcileResult> {
+    // 1. Check claim transaction
+    if let Some(claim_tx_hash) = &order.claim_tx_hash {
+        match self.delivery.get_receipt(claim_tx_hash, order.origin_chain_id()).await {
+            Ok(receipt) if receipt.status => return Ok(ReconcileResult::Finalized),
+            Ok(_) => return Ok(ReconcileResult::Failed(TransactionType::Claim)),
+            Err(_) => return Ok(ReconcileResult::Failed(TransactionType::Claim)),
+        }
+    }
+    
+    // 2. Check pre-claim transaction
+    if let Some(pre_claim_tx_hash) = &order.pre_claim_tx_hash {
+        match self.delivery.get_receipt(pre_claim_tx_hash, order.origin_chain_id()).await {
+            Ok(receipt) if receipt.status => return Ok(ReconcileResult::NeedsClaim),
+            Ok(_) => return Ok(ReconcileResult::Failed(TransactionType::PreClaim)),
+            Err(_) => { /* Continue checking */ }
+        }
+    }
+    
+    // 3. Check post-fill transaction
+    if let Some(post_fill_tx_hash) = &order.post_fill_tx_hash {
+        match self.delivery.get_receipt(post_fill_tx_hash, order.destination_chain_id()).await {
+            Ok(receipt) if receipt.status => return Ok(ReconcileResult::NeedsMonitoring),
+            Ok(_) => return Ok(ReconcileResult::Failed(TransactionType::PostFill)),
+            Err(_) => { /* Continue checking */ }
+        }
+    }
+    
+    // 4. Check fill transaction
+    if let Some(fill_tx_hash) = &order.fill_tx_hash {
+        match self.delivery.get_receipt(fill_tx_hash, order.destination_chain_id()).await {
+            Ok(receipt) if receipt.status => return Ok(ReconcileResult::NeedsPostFill),
+            Ok(_) => return Ok(ReconcileResult::Failed(TransactionType::Fill)),
+            Err(_) => { /* Continue checking */ }
+        }
+    }
+    
+    // 5. Check prepare transaction
+    if let Some(prepare_tx_hash) = &order.prepare_tx_hash {
+        match self.delivery.get_receipt(prepare_tx_hash, order.origin_chain_id()).await {
+            Ok(receipt) if receipt.status => return Ok(ReconcileResult::NeedsFill),
+            Ok(_) => return Ok(ReconcileResult::Failed(TransactionType::Prepare)),
+            Err(_) => { /* Continue checking */ }
+        }
+    }
+    
+    // 6. No transactions submitted yet
+    Ok(ReconcileResult::NeedsExecution)
+}
+```
+
+### SettlementMonitor
+
+Asynchronous monitor for settlement readiness.
+
+```rust
+pub struct SettlementMonitor {
+    settlement: Arc<SettlementService>,
+    state_machine: Arc<OrderStateMachine>,
+    event_bus: EventBus,
+    timeout_minutes: u64,
+}
+```
+
+**Monitoring Process:**
+
+```rust
+pub async fn monitor_settlement(&self, order: Order) {
+    let poll_interval = Duration::from_secs(30);
+    let timeout = Duration::from_minutes(self.timeout_minutes);
+    let start_time = Instant::now();
+    
+    loop {
+        // Check timeout
+        if start_time.elapsed() > timeout {
+            tracing::warn!("Settlement monitoring timeout for order {}", order.id);
+            break;
+        }
+        
+        // Get fill proof
+        let fill_proof = match &order.fill_proof {
+            Some(proof) => proof,
+            None => {
+                // Generate attestation
+                let fill_tx_hash = order.fill_tx_hash.as_ref().unwrap();
+                let proof = self.settlement.get_attestation(&order, fill_tx_hash).await?;
+                
+                // Store proof
+                self.state_machine.set_fill_proof(&order.id, proof.clone()).await?;
+                proof
+            }
+        };
+        
+        // Check if can claim
+        if self.settlement.can_claim(&order, &fill_proof).await {
+            // Update state
+            self.state_machine.transition_order_status(&order.id, OrderStatus::Settled).await?;
+            
+            // Emit event
+            self.event_bus.publish(SolverEvent::Settlement(
+                SettlementEvent::PreClaimReady { order_id: order.id }
+            ))?;
+            break;
+        }
+        
+        // Wait before next check
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+```
+
+---
+
+## Integration Architecture
+
+### Service Dependencies
+
+The engine coordinates between specialized services:
+
+```
+SolverEngine
+├── StorageService (solver-storage)
+│   └── Persistent state with TTL management
+├── AccountService (solver-account)
+│   └── Key management and signing
+├── DeliveryService (solver-delivery)
+│   └── Transaction submission and monitoring
+├── DiscoveryService (solver-discovery)
+│   └── Intent discovery from multiple sources
+├── OrderService (solver-order)
+│   └── Validation and transaction generation
+├── SettlementService (solver-settlement)
+│   └── Proof retrieval and claim checking
+└── PricingService (solver-pricing)
+    └── Asset pricing and conversions
+```
+
+### Builder Pattern Construction
+
+The `SolverBuilder` uses factory functions for pluggable implementations:
+
+```rust
+pub struct SolverFactories<SF, AF, DF, DIF, OF, PF, SEF, STF> {
+    pub storage_factories: HashMap<String, SF>,
+    pub account_factories: HashMap<String, AF>,
+    pub delivery_factories: HashMap<String, DF>,
+    pub discovery_factories: HashMap<String, DIF>,
+    pub order_factories: HashMap<String, OF>,
+    pub pricing_factories: HashMap<String, PF>,
+    pub settlement_factories: HashMap<String, SEF>,
+    pub strategy_factories: HashMap<String, STF>,
+}
+```
+
+**Construction Phases:**
+
+1. **Storage Setup**: Create and select primary storage backend
+2. **Account Setup**: Create accounts and fetch solver address
+3. **Delivery Setup**: Create delivery with per-network account mapping
+4. **Settlement Setup**: Create settlements (before orders for oracle routes)
+5. **Pricing Setup**: Create and select primary pricing service
+6. **Order Setup**: Create orders with oracle routes from settlement
+7. **Strategy Setup**: Create and select execution strategy
+8. **Token Setup**: Initialize token manager and set approvals
+9. **Engine Assembly**: Construct engine with all services
+
+**Example Usage:**
+
+```rust
+let config = Config::load_from_file("config.toml")?;
+let builder = SolverBuilder::new(config);
+
+let factories = SolverFactories {
+    storage_factories: storage_factories(),
+    account_factories: account_factories(),
+    delivery_factories: delivery_factories(),
+    discovery_factories: discovery_factories(),
+    order_factories: order_factories(),
+    pricing_factories: pricing_factories(),
+    settlement_factories: settlement_factories(),
+    strategy_factories: strategy_factories(),
+};
+
+let engine = builder.build(factories).await?;
+engine.run().await?;
+```
+
+### Concurrency Model
+
+The engine uses dual semaphores for controlled concurrency:
+
+**Transaction Semaphore (capacity=1)**:
+- Serializes all transaction submissions
+- Prevents nonce conflicts
+- Used for: Preparing, Executing, PostFill, PreClaim, Claim events
+
+**General Semaphore (capacity=100)**:
+- Allows concurrent non-transaction operations
+- Maximizes throughput for validations and storage operations
+- Used for: Intent handling, transaction confirmations, storage reads
+
+**Task Spawning Pattern:**
+
+```rust
+async fn spawn_handler<F, Fut>(&self, semaphore: &Arc<Semaphore>, handler: F)
+where
+    F: FnOnce(SolverEngine) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), EngineError>> + Send,
+{
+    let engine = self.clone();
+    match semaphore.clone().acquire_owned().await {
+        Ok(permit) => {
+            tokio::spawn(async move {
+                let _permit = permit;  // Kept alive for task duration
+                if let Err(e) = handler(engine).await {
+                    tracing::error!("Handler error: {}", e);
+                }
+            });
+        }
+    }
+}
+```
+
+---
+
+## Internal Flow Diagrams
+
+### Complete Order Lifecycle
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      INTENT DISCOVERY                           │
+│  Discovery → IntentHandler → Validation → Profitability Check  │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ OrderEvent       │
+                    │ ::Preparing      │
+                    └──────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                   PREPARE PHASE (Off-chain Only)                │
+│  OrderHandler → Generate prepare tx → DeliveryService           │
+│  → Monitor confirmation → TransactionHandler                    │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ OrderEvent       │
+                    │ ::Executing      │
+                    └──────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                         FILL PHASE                              │
+│  OrderHandler → Generate fill tx → DeliveryService              │
+│  → Monitor confirmation → TransactionHandler                    │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ SettlementEvent  │
+                    │ ::PostFillReady  │
+                    └──────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                   POST-FILL PHASE (Optional)                    │
+│  SettlementHandler → Check if needed → Generate tx (if needed) │
+│  → Monitor confirmation OR skip to monitoring                   │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ SettlementEvent  │
+                    │ ::StartMonitoring│
+                    └──────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     MONITORING PHASE                            │
+│  SettlementMonitor (async task) → Get attestation → Store proof│
+│  → Poll can_claim() → Wait for conditions OR timeout            │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ SettlementEvent  │
+                    │ ::PreClaimReady  │
+                    └──────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                   PRE-CLAIM PHASE (Optional)                    │
+│  SettlementHandler → Check if needed → Generate tx (if needed) │
+│  → Monitor confirmation OR emit ClaimReady                      │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ SettlementEvent  │
+                    │ ::ClaimReady     │
+                    └──────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                       CLAIM PHASE                               │
+│  SettlementHandler → Batch orders → Generate claim tx          │
+│  → DeliveryService → Monitor confirmation → Mark Finalized     │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ SettlementEvent  │
+                    │ ::Completed      │
+                    └──────────────────┘
+```
+
+### Recovery Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      ENGINE STARTUP                             │
+│  SolverEngine::run() → Subscribe to events                     │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ Initialize with  │
+                    │ Recovery         │
+                    └──────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    RECOVERY SERVICE                             │
+│  1. Load active orders from storage                             │
+│  2. Recover orphaned intents                                    │
+│  3. For each order: reconcile_with_blockchain()                 │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              BLOCKCHAIN RECONCILIATION                          │
+│  Check transactions in reverse order:                           │
+│  ┌─────────────────────────────────────────────┐                │
+│  │ Claim tx exists? → Check status on-chain    │                │
+│  │   ✓ Success → Finalized                     │                │
+│  │   ✗ Failed → Mark Failed(Claim)             │                │
+│  └─────────────────────────────────────────────┘                │
+│  ┌─────────────────────────────────────────────┐                │
+│  │ PreClaim tx exists? → Check status          │                │
+│  │   ✓ Success → NeedsClaim                    │                │
+│  │   ✗ Failed → Mark Failed(PreClaim)          │                │
+│  └─────────────────────────────────────────────┘                │
+│  ┌─────────────────────────────────────────────┐                │
+│  │ PostFill tx exists? → Check status          │                │
+│  │   ✓ Success → NeedsMonitoring               │                │
+│  │   ✗ Failed → Mark Failed(PostFill)          │                │
+│  └─────────────────────────────────────────────┘                │
+│  ┌─────────────────────────────────────────────┐                │
+│  │ Fill tx exists? → Check status              │                │
+│  │   ✓ Success → NeedsPostFill OR NeedsPreClaim│               │
+│  │   ✗ Failed → Mark Failed(Fill)              │                │
+│  └─────────────────────────────────────────────┘                │
+│  ┌─────────────────────────────────────────────┐                │
+│  │ Prepare tx exists? → Check status           │                │
+│  │   ✓ Success → NeedsFill                     │                │
+│  │   ✗ Failed → Mark Failed(Prepare)           │                │
+│  └─────────────────────────────────────────────┘                │
+│  ┌─────────────────────────────────────────────┐                │
+│  │ No transactions? → NeedsExecution           │                │
+│  └─────────────────────────────────────────────┘                │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                   PUBLISH RECOVERY EVENTS                       │
+│  1. Update order status to match blockchain state               │
+│  2. Emit appropriate event to resume processing                 │
+│     - NeedsExecution → OrderEvent::Executing                    │
+│     - NeedsFill → OrderEvent::Executing                         │
+│     - NeedsPostFill → SettlementEvent::PostFillReady            │
+│     - NeedsMonitoring → SettlementEvent::StartMonitoring        │
+│     - NeedsPreClaim → SettlementEvent::PreClaimReady            │
+│     - NeedsClaim → SettlementEvent::ClaimReady                  │
+└─────────────────────────────────────────────────────────────────┘
+                               ↓
+                    ┌──────────────────┐
+                    │ Start Discovery  │
+                    │ and Main Loop    │
+                    └──────────────────┘
+```
+
+### Event Routing Pattern
+
+Main event loop structure:
+
+```rust
+loop {
+    tokio::select! {
+        // Discovery channel for new intents
+        Some(intent) = intent_rx.recv() => {
+            spawn_handler(&general_semaphore, |engine| async move {
+                engine.intent_handler.handle(intent).await
+            }).await;
+        }
+        
+        // Event channel for lifecycle events
+        Ok(event) = event_receiver.recv() => {
+            match event {
+                SolverEvent::Order(OrderEvent::Preparing { order, .. }) => {
+                    spawn_handler(&transaction_semaphore, |engine| async move {
+                        engine.order_handler.handle_preparing(order).await
+                    }).await;
+                }
+                
+                SolverEvent::Order(OrderEvent::Executing { order, .. }) => {
+                    spawn_handler(&transaction_semaphore, |engine| async move {
+                        engine.order_handler.handle_executing(order).await
+                    }).await;
+                }
+                
+                SolverEvent::Delivery(DeliveryEvent::TransactionConfirmed {
+                    order_id, tx_type, receipt, ..
+                }) => {
+                    spawn_handler(&general_semaphore, |engine| async move {
+                        engine.transaction_handler.handle_transaction_confirmed(
+                            order_id, tx_type, receipt
+                        ).await
+                    }).await;
+                }
+                
+                SolverEvent::Settlement(SettlementEvent::PostFillReady { order_id }) => {
+                    spawn_handler(&transaction_semaphore, |engine| async move {
+                        engine.settlement_handler.handle_post_fill_ready(order_id).await
+                    }).await;
+                }
+                
+                SolverEvent::Settlement(SettlementEvent::StartMonitoring { order_id, .. }) => {
+                    spawn_handler(&general_semaphore, |engine| async move {
+                        let order = engine.storage.retrieve("orders", &order_id).await?;
+                        let monitor = SettlementMonitor::new(
+                            engine.settlement.clone(),
+                            engine.state_machine.clone(),
+                            engine.event_bus.clone(),
+                            engine.config.solver.monitoring_timeout_seconds / 60,
+                        );
+                        monitor.monitor_settlement(order).await;
+                        Ok(())
+                    }).await;
+                }
+                
+                SolverEvent::Settlement(SettlementEvent::ClaimReady { order_id }) => {
+                    spawn_handler(&transaction_semaphore, |engine| async move {
+                        engine.settlement_handler.handle_claim_ready(order_id).await
+                    }).await;
+                }
+                
+                // Other event types...
+            }
+        }
+        
+        // Shutdown signal
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Shutdown signal received");
+            break;
+        }
+    }
+}
+```
+
+---
+
+## Extension Points
+
+### Adding New Handlers
+
+Create a handler struct with required services:
+
+```rust
+pub struct CustomHandler {
+    storage: Arc<StorageService>,
+    state_machine: Arc<OrderStateMachine>,
+    event_bus: EventBus,
+    custom_service: Arc<CustomService>,
+}
+
+impl CustomHandler {
+    pub fn new(
+        storage: Arc<StorageService>,
+        state_machine: Arc<OrderStateMachine>,
+        event_bus: EventBus,
+        custom_service: Arc<CustomService>,
+    ) -> Self {
+        Self { storage, state_machine, event_bus, custom_service }
+    }
+
+    pub async fn handle_custom_event(&self, data: CustomData) -> Result<(), CustomError> {
+        // 1. Load order
+        let order = self.storage.retrieve("orders", &data.order_id).await?;
+        
+        // 2. Process with custom logic
+        let result = self.custom_service.process(&order, data).await?;
+        
+        // 3. Update state
+        self.state_machine.update_order_with(&order.id, |mut order| {
+            order.custom_field = result;
+            Ok(order)
+        }).await?;
+        
+        // 4. Emit next event
+        self.event_bus.publish(SolverEvent::Custom(
+            CustomEvent::ProcessingComplete { order_id: order.id }
+        ))?;
+        
+        Ok(())
+    }
+}
+```
+
+Add to SolverEngine and route in main loop.
+
+### Adding New Event Types
+
+Extend the SolverEvent enum in `solver-types`:
+
+```rust
+pub enum SolverEvent {
+    Discovery(DiscoveryEvent),
+    Order(OrderEvent),
+    Delivery(DeliveryEvent),
+    Settlement(SettlementEvent),
+    Custom(CustomEvent),  // New event type
+}
+
+pub enum CustomEvent {
+    CustomStateReached { order_id: String, data: CustomData },
+    CustomActionNeeded { order_id: String, action: CustomAction },
+    ProcessingComplete { order_id: String },
+}
+```
+
+### Adding New State Transitions
+
+Extend OrderStatus enum:
+
+```rust
+pub enum OrderStatus {
+    // ... existing states
+    CustomState,
+    CustomProcessing,
+}
+```
+
+Update state machine transition table:
+
+```rust
+static TRANSITIONS: Lazy<HashMap<OrderStatusKind, HashSet<OrderStatusKind>>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    // ... existing transitions
+    m.insert(OrderStatusKind::CustomState, HashSet::from([
+        OrderStatusKind::CustomProcessing,
+        OrderStatusKind::Failed,
+    ]));
+    m.insert(OrderStatusKind::CustomProcessing, HashSet::from([
+        OrderStatusKind::Executed,
+        OrderStatusKind::Failed,
+    ]));
+    m
+});
+```
+
+---
+
+## Related Documentation
+
+- [solver-types](/docs/solvers/crates/solver-types) - Core type system and events
+- [solver-config](/docs/solvers/crates/solver-config) - Engine configuration
+- [solver-storage](/docs/solvers/crates/solver-storage) - State persistence
+- [solver-account](/docs/solvers/crates/solver-account) - Transaction signing
+- [solver-delivery](/docs/solvers/crates/solver-delivery) - Transaction submission
+- [solver-discovery](/docs/solvers/crates/solver-discovery) - Intent ingestion
+- [solver-settlement](/docs/solvers/crates/solver-settlement) - Settlement coordination

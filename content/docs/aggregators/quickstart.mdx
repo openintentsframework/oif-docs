@@ -49,4 +49,8 @@ cargo run
    The server runs on `http://localhost:4000` by default.
 
 5. **Test the Setup**:
-   Verify the aggregator
+   Verify the aggregator is running by sending a request to its health endpoint:
+
+   ```bash
+   curl http://localhost:4000/health
+   ```

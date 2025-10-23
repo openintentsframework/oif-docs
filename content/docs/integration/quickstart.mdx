@@ -1,18 +1,399 @@
 ---
-title: Quickstart
-description: Make your first API calls
+title: Integration Quickstart
+description: Execute your first cross-chain swap in 5 minutes
 ---
 
-Authenticate and send your first requests.
+# Integration Quickstart
 
-### Prerequisites
+Get your first cross-chain swap working in under 5 minutes using OIF APIs.
 
-- API key or dev token
+## What You'll Build
 
-### Steps
+By the end of this quickstart, you'll have:
+- Requested quotes from multiple solvers
+- Submitted a signed intent
+- Tracked execution to completion
 
-1. Set base URL and headers
-2. Create an intent via REST
-3. Subscribe to webhook for updates
-4. Inspect bid selection result
+## Prerequisites
+
+- **Node.js 18+** or **Python 3.8+**
+- **Local aggregator running** OR access to a deployed instance
+- **Basic blockchain knowledge** (addresses, signing)
+
+<Callout type="info">
+This quickstart uses simplified examples. For production code, see [Complete Examples](/docs/apis/examples).
+</Callout>
+
+## Step 1: Start Local Aggregator (Optional)
+
+If you don't have access to a deployed aggregator, run one locally:
+
+```bash
+# Clone and run aggregator
+git clone https://github.com/openintentsframework/oif-aggregator.git
+cd oif-aggregator
+export INTEGRITY_SECRET="quickstart-secret-min-32-characters"
+cargo run
+```
+
+Wait for the server to start on `http://localhost:3000`.
+
+Verify it's running:
+```bash
+curl http://localhost:3000/health
+```
+
+## Step 2: Check Available Solvers
+
+See what solvers are available:
+
+```bash
+curl http://localhost:3000/v1/solvers | jq
+```
+
+You should see a list of configured solvers. If empty, the aggregator needs solver configuration.
+
+## Step 3: Request Quotes
+
+### Using cURL
+
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+    "intent": {
+      "intentType": "oif-swap",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "amount": "1000000000",
+        "lock": {
+          "kind": "the-compact"
+        }
+      }],
+      "outputs": [{
+        "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      }]
+    },
+    "swapType": "exact-input"
+  }'
+```
+
+### Using JavaScript/TypeScript
+
+Create `quickstart.js`:
+
+```javascript
+const BASE_URL = 'http://localhost:3000';
+
+async function getQuotes() {
+  const response = await fetch(`${BASE_URL}/v1/quotes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+      intent: {
+        intentType: 'oif-swap',
+        inputs: [{
+          user: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+          asset: '0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+          amount: '1000000000', // 1000 USDC
+          lock: { kind: 'the-compact' }
+        }],
+        outputs: [{
+          receiver: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+          asset: '0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' // WETH
+        }]
+      },
+      swapType: 'exact-input'
+    })
+  });
+
+  const data = await response.json();
+  console.log('Received quotes:', data);
+  return data;
+}
+
+getQuotes();
+```
+
+Run it:
+```bash
+node quickstart.js
+```
+
+### Using Python
+
+Create `quickstart.py`:
+
+```python
+import requests
+
+BASE_URL = 'http://localhost:3000'
+
+def get_quotes():
+    response = requests.post(
+        f'{BASE_URL}/v1/quotes',
+        json={
+            'user': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+            'intent': {
+                'intentType': 'oif-swap',
+                'inputs': [{
+                    'user': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+                    'asset': '0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+                    'amount': '1000000000',
+                    'lock': {'kind': 'the-compact'}
+                }],
+                'outputs': [{
+                    'receiver': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+                    'asset': '0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+                }]
+            },
+            'swapType': 'exact-input'
+        }
+    )
+    
+    data = response.json()
+    print(f"Received {data['totalQuotes']} quotes")
+    return data
+
+if __name__ == '__main__':
+    quotes = get_quotes()
+```
+
+Run it:
+```bash
+python quickstart.py
+```
+
+## Step 4: Understanding the Response
+
+You should see a response like:
+
+```json
+{
+  "quotes": [
+    {
+      "quoteId": "quote_abc123xyz",
+      "solverId": "solver-1",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "amount": "1000000000"
+      }],
+      "outputs": [{
+        "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "amount": "400000000000000000"
+      }],
+      "expiresAt": 1703123756,
+      "estimatedFillTime": 30
+    }
+  ],
+  "totalQuotes": 1
+}
+```
+
+**Key fields**:
+- `quoteId`: Use this to submit the order
+- `outputs[0].amount`: How much you'll receive (0.4 ETH in this example)
+- `expiresAt`: Quote expiration timestamp
+- `estimatedFillTime`: Expected execution time in seconds
+
+## Step 5: Submit Order (Production Flow)
+
+<Callout type="warn">
+**Note**: Order submission requires signing with a real private key. This step is for understanding the flow. See [Complete Examples](/docs/apis/examples) for production signing code.
+</Callout>
+
+The full flow would be:
+
+```javascript
+// 1. Get quotes (done above)
+const quotes = await getQuotes();
+const bestQuote = quotes.quotes[0];
+
+// 2. Sign the quote (requires wallet)
+// const signature = await wallet.signMessage(bestQuote.quoteId);
+
+// 3. Submit order
+const order = await fetch(`${BASE_URL}/v1/orders`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    quoteId: bestQuote.quoteId,
+    signature: '0x...', // Your signature
+    userAddress: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045'
+  })
+});
+
+const orderData = await order.json();
+console.log('Order submitted:', orderData.orderId);
+
+// 4. Poll for status
+while (true) {
+  const status = await fetch(`${BASE_URL}/v1/orders/${orderData.orderId}`);
+  const orderStatus = await status.json();
+  
+  console.log('Status:', orderStatus.status);
+  
+  if (['completed', 'failed', 'expired'].includes(orderStatus.status)) {
+    break;
+  }
+  
+  await new Promise(resolve => setTimeout(resolve, 5000));
+}
+```
+
+## Step 6: Understanding EIP-7930 Addresses
+
+You may have noticed addresses like `0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045`.
+
+This is the **EIP-7930 cross-chain address format**:
+
+```
+0x0001 + chainId + address
+│      │        └─ Regular Ethereum address (20 bytes)
+│      └─ Chain ID: 00000101 = 1 (Ethereum mainnet)
+└─ Version: 0001
+```
+
+**Converting regular address to EIP-7930**:
+
+```javascript
+function toEIP7930(address, chainId) {
+  // Remove 0x prefix
+  const addr = address.slice(2);
+  
+  // Pad chain ID to 4 bytes (8 hex chars)
+  const chain = chainId.toString(16).padStart(8, '0');
+  
+  return `0x0001${chain}${addr}`;
+}
+
+// Example
+const ethMainnetAddress = toEIP7930(
+  '0x14D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+  1
+);
+// Result: 0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045
+```
+
+**Common chain IDs**:
+- Ethereum: `1` → `0x00010000010`
+- Arbitrum: `42161` → `0x00010000A4B1`
+- Optimism: `10` → `0x0001000000A`
+- Base: `8453` → `0x00010000021`
+
+## Troubleshooting
+
+### Error: "No quotes available"
+
+**Cause**: No solvers configured or all solvers failed
+
+**Solution**:
+```bash
+# Check solver status
+curl http://localhost:3000/v1/solvers | jq '.solvers'
+
+# Check health
+curl http://localhost:3000/health | jq
+```
+
+### Error: "Connection refused"
+
+**Cause**: Aggregator not running
+
+**Solution**:
+```bash
+# Ensure aggregator is running
+cd oif-aggregator
+export INTEGRITY_SECRET="your-secret-min-32-chars"
+cargo run
+```
+
+### Error: "VALIDATION_ERROR"
+
+**Cause**: Invalid request format
+
+**Solution**:
+- Verify addresses are in EIP-7930 format
+- Ensure amounts are strings, not numbers
+- Check all required fields are present
+
+### Quote Response is Empty
+
+**Cause**: Solvers may not support the requested asset pair
+
+**Solution**:
+```bash
+# Check what assets solvers support
+curl http://localhost:3000/v1/solvers | \
+  jq '.solvers[].supportedAssets'
+```
+
+## Next Steps
+
+Now that you've seen the basics, explore:
+
+### Learn the Details
+
+<Cards>
+  <Card title="API Reference" href="/docs/apis" description="Complete API documentation" />
+  <Card title="Error Handling" href="/docs/apis/errors" description="Handle errors properly" />
+  <Card title="Integration Patterns" href="/docs/integration/overview" description="Production patterns" />
+</Cards>
+
+### See Complete Examples
+
+<Cards>
+  <Card title="TypeScript Example" href="/docs/apis/examples#typescript" description="Full TypeScript integration" />
+  <Card title="Python Example" href="/docs/apis/examples#python" description="Complete Python client" />
+  <Card title="Rust Example" href="/docs/apis/examples#rust" description="Rust integration" />
+</Cards>
+
+### Production Checklist
+
+Before going to production:
+
+- [ ] Implement proper error handling
+- [ ] Add retry logic with exponential backoff
+- [ ] Verify quote integrity checksums
+- [ ] Check quote expiration before submission
+- [ ] Implement proper signature generation
+- [ ] Test on testnets thoroughly
+- [ ] Set up monitoring and alerting
+- [ ] Review security best practices
+
+See [Complete Examples](/docs/apis/examples) for production-ready code.
+
+## Quick Reference
+
+### Get Quotes
+```bash
+POST /v1/quotes
+```
+
+### Submit Order
+```bash
+POST /v1/orders
+```
+
+### Check Order Status
+```bash
+GET /v1/orders/:orderId
+```
+
+### Check Health
+```bash
+GET /health
+```
+
+## Support
+
+- **Issues**: [GitHub Issues](https://github.com/openintentsframework/oif-aggregator/issues)
+- **Examples**: See [API Examples](/docs/apis/examples)
+- **Reference**: Check [API Documentation](/docs/apis)
 

@@ -1,0 +1,385 @@
+---
+title: Health Check
+description: Monitor aggregator service health and status
+---
+
+# Health Check API
+
+The Health Check endpoint provides comprehensive status information about the aggregator service, including solver health and storage status.
+
+## Endpoint
+
+```
+GET /health
+```
+
+## Request
+
+```bash
+curl http://localhost:3000/health
+```
+
+## Response Format
+
+### Healthy Service (200 OK)
+
+```json
+{
+  "status": "healthy",
+  "version": "0.1.0",
+  "solvers": {
+    "total": 3,
+    "active": 3,
+    "inactive": 0,
+    "healthy": 3,
+    "unhealthy": 0,
+    "healthDetails": {
+      "solver-best-price": true,
+      "solver-fast-execution": true,
+      "solver-cross-chain": true
+    }
+  },
+  "storage": {
+    "healthy": true,
+    "backend": "memory"
+  }
+}
+```
+
+### Degraded Service (503 Service Unavailable)
+
+```json
+{
+  "status": "degraded",
+  "version": "0.1.0",
+  "solvers": {
+    "total": 3,
+    "active": 3,
+    "inactive": 0,
+    "healthy": 1,
+    "unhealthy": 2,
+    "healthDetails": {
+      "solver-best-price": true,
+      "solver-fast-execution": false,
+      "solver-cross-chain": false
+    }
+  },
+  "storage": {
+    "healthy": true,
+    "backend": "memory"
+  }
+}
+```
+
+## Response Fields
+
+### Root Level
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Overall health: "healthy" or "degraded" |
+| `version` | string | Aggregator version |
+| `solvers` | object | Solver health statistics |
+| `storage` | object | Storage backend status |
+
+### Solvers Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total` | number | Total configured solvers |
+| `active` | number | Currently active solvers |
+| `inactive` | number | Inactive solvers |
+| `healthy` | number | Healthy solvers |
+| `unhealthy` | number | Unhealthy solvers |
+| `healthDetails` | object | Per-solver health status |
+
+### Storage Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `healthy` | boolean | Storage backend status |
+| `backend` | string | Storage type (e.g., "memory", "redis") |
+
+## Health Status Logic
+
+### Overall Status
+
+The service is considered:
+
+- **Healthy** (200): All components operational
+  - Storage is healthy
+  - At least one solver is healthy OR no solvers configured
+  
+- **Degraded** (503): Some components failing
+  - Storage is unhealthy OR
+  - All solvers are unhealthy (when solvers exist)
+
+### Solver Health
+
+Individual solvers are marked unhealthy when:
+- Multiple consecutive request failures
+- Timeout threshold exceeded
+- Circuit breaker triggered
+
+## Monitoring Examples
+
+### Basic Health Check
+
+```bash
+#!/bin/bash
+response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
+
+if [ $response -eq 200 ]; then
+  echo "Service is healthy"
+  exit 0
+else
+  echo "Service is degraded or down"
+  exit 1
+fi
+```
+
+### Detailed Health Monitoring
+
+```bash
+curl -s http://localhost:3000/health | jq '{
+  status: .status,
+  version: .version,
+  healthy_solvers: .solvers.healthy,
+  total_solvers: .solvers.total,
+  storage_ok: .storage.healthy
+}'
+```
+
+### TypeScript Health Check
+
+```typescript
+interface HealthResponse {
+  status: 'healthy' | 'degraded';
+  version: string;
+  solvers: {
+    total: number;
+    active: number;
+    healthy: number;
+    unhealthy: number;
+    healthDetails: Record<string, boolean>;
+  };
+  storage: {
+    healthy: boolean;
+    backend: string;
+  };
+}
+
+async function checkHealth(): Promise<HealthResponse> {
+  const response = await fetch('http://localhost:3000/health');
+  return response.json();
+}
+
+async function waitForHealthy(maxAttempts = 30): Promise<void> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const health = await checkHealth();
+    
+    if (health.status === 'healthy') {
+      console.log('Service is healthy');
+      return;
+    }
+    
+    console.log(`Attempt ${i + 1}: Service is ${health.status}`);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  
+  throw new Error('Service did not become healthy');
+}
+```
+
+### Python Health Check
+
+```python
+import requests
+import time
+
+def check_health(base_url='http://localhost:3000'):
+    response = requests.get(f'{base_url}/health')
+    return response.json()
+
+def wait_for_healthy(base_url='http://localhost:3000', timeout=60):
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            health = check_health(base_url)
+            
+            if health['status'] == 'healthy':
+                print(f"Service is healthy (v{health['version']})")
+                return True
+                
+            print(f"Service is {health['status']}, waiting...")
+            time.sleep(2)
+            
+        except requests.RequestException as e:
+            print(f"Health check failed: {e}")
+            time.sleep(2)
+    
+    raise TimeoutError('Service did not become healthy')
+```
+
+## Docker Health Check
+
+Add to your `docker-compose.yml`:
+
+```yaml
+services:
+  oif-aggregator:
+    image: oif-aggregator:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+```
+
+## Kubernetes Readiness Probe
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oif-aggregator
+spec:
+  containers:
+  - name: aggregator
+    image: oif-aggregator:latest
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      failureThreshold: 3
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 30
+      periodSeconds: 10
+```
+
+## Prometheus Metrics
+
+Export health as Prometheus metrics:
+
+```python
+from prometheus_client import Gauge, generate_latest
+import requests
+
+health_status = Gauge('oif_aggregator_healthy', 'Aggregator health status (1=healthy, 0=degraded)')
+solver_healthy_count = Gauge('oif_solver_healthy_count', 'Number of healthy solvers')
+solver_total_count = Gauge('oif_solver_total_count', 'Total number of solvers')
+
+def update_metrics():
+    health = requests.get('http://localhost:3000/health').json()
+    
+    health_status.set(1 if health['status'] == 'healthy' else 0)
+    solver_healthy_count.set(health['solvers']['healthy'])
+    solver_total_count.set(health['solvers']['total'])
+```
+
+## Alerting Rules
+
+### Prometheus Alert
+
+```yaml
+groups:
+- name: oif_aggregator
+  rules:
+  - alert: AggregatorUnhealthy
+    expr: oif_aggregator_healthy == 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "OIF Aggregator is unhealthy"
+      description: "Aggregator has been unhealthy for more than 2 minutes"
+  
+  - alert: LowSolverCount
+    expr: oif_solver_healthy_count < 2
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Low number of healthy solvers"
+      description: "Only {{ $value }} healthy solvers available"
+```
+
+## Troubleshooting
+
+### All Solvers Unhealthy
+
+```bash
+# Check individual solver health
+curl http://localhost:3000/v1/solvers | jq '.solvers[] | {id: .solverId, healthy: .healthy}'
+
+# Check solver endpoints
+curl https://api.solver1.com/health
+```
+
+### Storage Unhealthy
+
+```bash
+# For memory storage, usually indicates internal error
+# Check aggregator logs
+docker logs oif-aggregator
+
+# For Redis storage, check connection
+redis-cli ping
+```
+
+### Service Degraded
+
+```bash
+# Get detailed health info
+curl -s http://localhost:3000/health | jq .
+
+# Check recent logs
+docker logs --tail 100 oif-aggregator
+
+# Restart service if needed
+docker restart oif-aggregator
+```
+
+## Best Practices
+
+### 1. Regular Monitoring
+
+Check health every 30-60 seconds:
+
+```bash
+*/1 * * * * curl -s http://localhost:3000/health | jq .status
+```
+
+### 2. Automated Recovery
+
+Restart service if unhealthy for extended period:
+
+```bash
+#!/bin/bash
+if [ $(curl -s http://localhost:3000/health | jq -r .status) != "healthy" ]; then
+  echo "Service unhealthy, restarting..."
+  docker restart oif-aggregator
+fi
+```
+
+### 3. Alert on Degradation
+
+Set up alerts for degraded status, not just complete failures.
+
+### 4. Track Trends
+
+Monitor solver health trends over time to identify problematic solvers.
+
+## Next Steps
+
+- Monitor [Solver API](/docs/apis/solver-api) for detailed solver status
+- Set up [Error Handling](/docs/apis/errors)
+- Review [Rate Limits](/docs/apis/rate-limits)
+

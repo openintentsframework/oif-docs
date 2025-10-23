@@ -1,4 +1,9 @@
 {
-  "title": "Integration"
+  "title": "Integration",
+  "pages": [
+    "overview",
+    "quickstart",
+    "openapi"
+  ]
 }
 

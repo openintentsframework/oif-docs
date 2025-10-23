@@ -1,7 +1,6 @@
 {
   "title": "Smart Contracts",
   "pages": [
-    "index",
     "overview",
     "quickstart",
     "core-contracts",

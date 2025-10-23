@@ -1,0 +1,54 @@
+---
+title: OIF Aggregator
+description: A high-performance aggregator for Open Intent Framework (OIF) solvers, providing quote aggregation, intent submission, and solver management.
+---
+
+# OIF Aggregator
+
+A high-performance aggregator for Open Intent Framework (OIF) solvers, providing quote aggregation, intent submission, and solver management.
+
+## Features
+
+### Core Capabilities
+
+- Multi-Solver Quote Aggregation - Fetch quotes from multiple DeFi solvers concurrently
+- ERC-7930 Compliance - Full support for the Open Intent Framework standard
+- Intent-Based Architecture - Submit intents and track execution through to settlement
+- Integrity Verification - HMAC-SHA256 checksums prevent quote tampering
+- Circuit Breaker Protection - Automatic failure detection and recovery for failing solvers
+- Performance Metrics - Real-time solver performance monitoring and analytics
+- Flexible Storage - In-memory storage backend
+- Rate Limiting - Built-in IP-based rate limiting
+
+### Extensibility
+
+- Custom Adapters - Easily integrate new solver protocols
+- Builder Pattern - Flexible programmatic configuration
+- Pluggable Authentication - Multiple auth strategies (API keys, none, custom)
+- Configurable Timeouts - Per-solver and global timeout management
+
+### Performance & Reliability
+
+- Async/Await - Built on Tokio for high concurrency
+- Circuit Breaker Pattern - Prevents cascading failures with exponential backoff
+- Solver Health Monitoring - Real-time success rates and error tracking
+- Smart Filtering - Intelligent solver selection based on performance metrics
+- Error Handling - Comprehensive error types and recovery
+- Structured Logging - JSON and pretty-print log formats
+
+## API Endpoints
+
+Once running, the following endpoints are available:
+
+- `GET /health` - Health check
+- `POST /v1/quotes` - Get quotes from multiple solvers
+- `POST /v1/orders` - Submit order for execution
+- `GET /v1/orders/{id}` - Get order
+- `GET /v1/solvers` - List all solvers
+- `GET /v1/solvers/{id}` - Get solver details
+- `GET /swagger-ui` - Swagger UI - Available when run with openapi feature
+- `GET /api-docs/openapi.json` - OpenAPI specification - Available when run with openapi feature
+
+For interactive API documentation, run with `--features openapi`.
+
+See [API Reference](./api-reference.mdx) for detailed OpenAPI playground.

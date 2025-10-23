@@ -4,6 +4,7 @@
         "smart-contracts",
         "solvers",
         "aggregators",
+        "apis",
         "integration"
     ]
 }

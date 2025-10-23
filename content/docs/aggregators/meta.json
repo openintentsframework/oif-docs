@@ -1,4 +1,15 @@
 {
-  "title": "Aggregators"
+  "title": "Aggregators",
+  "pages": [
+    "quickstart",
+    "configuration",
+    "how-it-works",
+    "architecture",
+    "adapters",
+    "custom-adapter",
+    "maintenance",
+    "development",
+    "docker",
+    "api-reference"
+  ]
 }
-

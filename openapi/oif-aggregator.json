@@ -1,0 +1,1967 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OIF Aggregator API",
+    "description": "Open Intents Framework (OIF) Aggregator provides a unified API for cross-chain transaction aggregation. This service connects to multiple solvers to find the best execution paths for user intents across different blockchain networks.",
+    "contact": {
+      "name": "OIF Team",
+      "url": "https://github.com/openintentsframework/"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://github.com/openintentsframework/oif-aggregator/blob/main/LICENSE"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "GET /health - Comprehensive health check with detailed status",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Service healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orders": {
+      "post": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Submit a new order\nPOST /v1/orders - Submit an order",
+        "operationId": "post_orders",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Order created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Quote not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orders/{id}": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Get order status by ID\nGET /v1/orders/:id - Get order details by ID",
+        "operationId": "get_order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Order ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/quotes": {
+      "post": {
+        "tags": [
+          "quotes"
+        ],
+        "summary": "Get quotes for a swap request using standard OIF format\nPOST /v1/quotes - Get quotes",
+        "operationId": "post_quotes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Quotes aggregated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuotesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/solvers": {
+      "get": {
+        "tags": [
+          "solvers"
+        ],
+        "summary": "GET /v1/solvers - List all solvers",
+        "operationId": "get_solvers",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number (1-based)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "example": 1
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Items per page (1-100)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "example": 25
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of solvers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SolversResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/solvers/{id}": {
+      "get": {
+        "tags": [
+          "solvers"
+        ],
+        "summary": "GET /v1/solvers/{id} - Get solver by id",
+        "operationId": "get_solver_by_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Solver ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Solver details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SolverResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AggregationMetadata": {
+        "type": "object",
+        "description": "Metadata collected during quote aggregation",
+        "required": [
+          "totalDurationMs",
+          "solverTimeoutMs",
+          "globalTimeoutMs",
+          "earlyTermination",
+          "totalSolversAvailable",
+          "solversQueried",
+          "solversRespondedSuccess",
+          "solversRespondedError",
+          "solversTimedOut",
+          "minQuotesRequired",
+          "solverSelectionMode"
+        ],
+        "properties": {
+          "earlyTermination": {
+            "type": "boolean",
+            "description": "Whether early termination occurred (min_quotes satisfied)"
+          },
+          "globalTimeoutMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Global timeout used in milliseconds",
+            "minimum": 0
+          },
+          "minQuotesRequired": {
+            "type": "integer",
+            "description": "Minimum quotes required from solver options",
+            "minimum": 0
+          },
+          "solverSelectionMode": {
+            "$ref": "#/components/schemas/SolverSelection",
+            "description": "Solver selection strategy used"
+          },
+          "solverTimeoutMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Per-solver timeout used in milliseconds",
+            "minimum": 0
+          },
+          "solversQueried": {
+            "type": "integer",
+            "description": "Number of solvers actually queried",
+            "minimum": 0
+          },
+          "solversRespondedError": {
+            "type": "integer",
+            "description": "Number of solvers that returned errors",
+            "minimum": 0
+          },
+          "solversRespondedSuccess": {
+            "type": "integer",
+            "description": "Number of solvers that responded successfully",
+            "minimum": 0
+          },
+          "solversTimedOut": {
+            "type": "integer",
+            "description": "Number of solvers that timed out",
+            "minimum": 0
+          },
+          "totalDurationMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total time spent on aggregation in milliseconds",
+            "minimum": 0
+          },
+          "totalSolversAvailable": {
+            "type": "integer",
+            "description": "Total solvers registered in system",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "AssetAmount": {
+        "type": "object",
+        "description": "Asset amount representation using ERC-7930 interoperable address format.\n\nThis is a fundamental model used across all OIF versions.",
+        "required": [
+          "asset"
+        ],
+        "properties": {
+          "amount": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/U256",
+                "description": "Amount as a big integer"
+              }
+            ]
+          },
+          "asset": {
+            "$ref": "#/components/schemas/InteropAddress",
+            "description": "Asset address in ERC-7930 interoperable format"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AssetLockReference": {
+        "type": "object",
+        "description": "Reference to a lock in a locking system\nCorresponds to AssetLockReference in the OIF spec\n\nCore locking mechanism that is stable across versions.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LockKind",
+            "description": "Lock type identifier"
+          },
+          "params": {
+            "description": "Lock-specific parameters"
+          }
+        }
+      },
+      "AssetResponse": {
+        "type": "object",
+        "description": "Asset response format for API with separate address and chain ID fields",
+        "required": [
+          "address",
+          "chainId",
+          "symbol",
+          "name",
+          "decimals"
+        ],
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Token contract address"
+          },
+          "chainId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Chain ID where the token exists",
+            "minimum": 0
+          },
+          "decimals": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of decimal places",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable token name (e.g., \"USD Coin\", \"Ethereum\")"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "Token symbol (e.g., \"USDC\", \"ETH\", \"WBTC\")"
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "address": "0xA0b86a33E6441E7C81F7C93451777f5F4dE78e86",
+          "chainId": 1,
+          "decimals": 6,
+          "name": "USD Coin",
+          "symbol": "USDC"
+        }
+      },
+      "AssetRouteResponse": {
+        "type": "object",
+        "description": "API response format for asset routes with separate chain ID and address fields\n\nThis provides a more readable format for API consumers compared to the\ninternal InteropAddress format used in the domain model.",
+        "required": [
+          "originChainId",
+          "originTokenAddress",
+          "destinationChainId",
+          "destinationTokenAddress"
+        ],
+        "properties": {
+          "destinationChainId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Destination chain ID",
+            "minimum": 0
+          },
+          "destinationTokenAddress": {
+            "type": "string",
+            "description": "Destination token contract address"
+          },
+          "destinationTokenSymbol": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional destination token symbol for readability (e.g., \"WETH\", \"USDC\")"
+          },
+          "metadata": {
+            "description": "Optional route-specific metadata (fees, limits, execution time, etc.)"
+          },
+          "originChainId": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Origin chain ID",
+            "minimum": 0
+          },
+          "originTokenAddress": {
+            "type": "string",
+            "description": "Origin token contract address"
+          },
+          "originTokenSymbol": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional origin token symbol for readability (e.g., \"WETH\", \"USDC\")"
+          }
+        },
+        "example": {
+          "destinationChainId": 10,
+          "destinationTokenAddress": "0x4200000000000000000000000000000000000006",
+          "destinationTokenSymbol": "WETH",
+          "metadata": {
+            "estimatedFee": "0.001",
+            "estimatedTime": 120,
+            "isNative": false,
+            "source": "across-api"
+          },
+          "originChainId": 1,
+          "originTokenAddress": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "originTokenSymbol": "WETH"
+        }
+      },
+      "AuthScheme": {
+        "type": "string",
+        "enum": [
+          "erc4337",
+          "permit2",
+          "erc20-permit",
+          "eip3009"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Error response format shared by handlers",
+        "required": [
+          "error",
+          "message",
+          "timestamp"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "FailureHandlingMode": {
+        "type": "string",
+        "description": "Failure handling policy\nDefines how to handle transaction failures or partial fills\n\nCore failure handling that remains stable across OIF versions.",
+        "enum": [
+          "refund-automatic",
+          "refund-claim",
+          "needs-new-signature"
+        ]
+      },
+      "GetQuoteRequest": {
+        "type": "object",
+        "description": "Request for generating quotes\nRequest payload for obtaining swap quotes from providers. Contains all necessary\ninformation for providers to calculate and return executable quotes.",
+        "required": [
+          "user",
+          "intent",
+          "supportedTypes"
+        ],
+        "properties": {
+          "intent": {
+            "$ref": "#/components/schemas/IntentRequest",
+            "description": "The intent object containing swap details"
+          },
+          "supportedTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Order types supported by the provider"
+          },
+          "user": {
+            "$ref": "#/components/schemas/InteropAddress",
+            "description": "User requesting the quote and recipient of refund inputs in case of failures"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HashMap": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "EIP-712 type property\nSingle field definition used inside the EIP-712 `types` map\nExample: { name: \"amount\", type: \"uint256\" }",
+            "required": [
+              "name",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Field name"
+              },
+              "type": {
+                "type": "string",
+                "description": "Solidity/EVM type"
+              }
+            }
+          }
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "description": "Comprehensive health response",
+        "required": [
+          "status",
+          "version",
+          "solvers",
+          "storage"
+        ],
+        "properties": {
+          "solvers": {
+            "$ref": "#/components/schemas/SolverStats"
+          },
+          "status": {
+            "type": "string"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageHealthInfo"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "example": {
+          "solvers": {
+            "active": 2,
+            "healthDetails": {
+              "down-solver": false,
+              "example-solver": true,
+              "uniswap-solver": true
+            },
+            "healthy": 2,
+            "inactive": 1,
+            "total": 3,
+            "unhealthy": 1
+          },
+          "status": "healthy",
+          "storage": {
+            "backend": "memory",
+            "healthy": true
+          },
+          "version": "0.1.0"
+        }
+      },
+      "Input": {
+        "type": "object",
+        "description": "Available input from a user\nSpecifies assets that a user is willing to provide as input for a swap or transfer.",
+        "required": [
+          "user",
+          "asset"
+        ],
+        "properties": {
+          "amount": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/U256",
+                "description": "Amount available. For quote requests: exact-input (exact amount) or exact-output (minimum amount/optional)"
+              }
+            ]
+          },
+          "asset": {
+            "$ref": "#/components/schemas/InteropAddress",
+            "description": "Asset address being provided as input"
+          },
+          "lock": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AssetLockReference",
+                "description": "Optional lock reference for securing the input assets"
+              }
+            ]
+          },
+          "user": {
+            "$ref": "#/components/schemas/InteropAddress",
+            "description": "User address providing the input assets"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IntentRequest": {
+        "type": "object",
+        "description": "Intent request structure - the nested intent object in GetQuoteRequest",
+        "required": [
+          "intentType",
+          "inputs",
+          "outputs"
+        ],
+        "properties": {
+          "failureHandling": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FailureHandlingMode"
+            },
+            "description": "Failure handling policies that the integrator supports (array)"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Input"
+            },
+            "description": "Available inputs (order significant if preference is 'input-priority')"
+          },
+          "intentType": {
+            "$ref": "#/components/schemas/IntentType",
+            "description": "Type of intent - currently only \"oif-swap\" is supported"
+          },
+          "metadata": {
+            "description": "Metadata for the order, never required, potentially contains provider specific data"
+          },
+          "minValidUntil": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Minimum validity timestamp in seconds",
+            "minimum": 0
+          },
+          "originSubmission": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OriginSubmission",
+                "description": "Explicit preference for submission responsibility and acceptable auth schemes"
+              }
+            ]
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Output"
+            },
+            "description": "Requested outputs"
+          },
+          "partialFill": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the integrator supports partial fills"
+          },
+          "preference": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuotePreference",
+                "description": "Quote preference"
+              }
+            ]
+          },
+          "swapType": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SwapType",
+                "description": "Swap type for the quote - determines which amounts are fixed vs quoted"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "IntentType": {
+        "type": "string",
+        "description": "Intent type identifier\n\nCore intent types that are stable across OIF versions.",
+        "enum": [
+          "oif-swap"
+        ]
+      },
+      "InteropAddress": {
+        "type": "object",
+        "description": "ERC-7930 Interoperable Address",
+        "required": [
+          "version",
+          "chain_type",
+          "chain_reference",
+          "address"
+        ],
+        "properties": {
+          "address": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "chain_reference": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "chain_type": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "LockKind": {
+        "type": "string",
+        "description": "Supported lock mechanisms\n\nCore lock types that remain stable across OIF versions.",
+        "enum": [
+          "the-compact",
+          "rhinestone"
+        ]
+      },
+      "Order": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "payload",
+              "type"
+            ],
+            "properties": {
+              "payload": {
+                "$ref": "#/components/schemas/OrderPayload"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "oif-escrow-v0"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "payload",
+              "type"
+            ],
+            "properties": {
+              "payload": {
+                "$ref": "#/components/schemas/OrderPayload"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "oif-resource-lock-v0"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "payload",
+              "metadata",
+              "type"
+            ],
+            "properties": {
+              "metadata": {},
+              "payload": {
+                "$ref": "#/components/schemas/OrderPayload"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "oif-3009-v0"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "payload",
+              "type"
+            ],
+            "properties": {
+              "payload": {},
+              "type": {
+                "type": "string",
+                "enum": [
+                  "oif-generic-v0"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "TODO Across order type",
+            "required": [
+              "payload",
+              "type"
+            ],
+            "properties": {
+              "payload": {},
+              "type": {
+                "type": "string",
+                "enum": [
+                  "across"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "OIF Order union type with versioning support"
+      },
+      "OrderPayload": {
+        "type": "object",
+        "description": "Standard order payload structure for most order types",
+        "required": [
+          "signatureType",
+          "domain",
+          "primaryType",
+          "message",
+          "types"
+        ],
+        "properties": {
+          "domain": {},
+          "message": {},
+          "primaryType": {
+            "type": "string"
+          },
+          "signatureType": {
+            "$ref": "#/components/schemas/SignatureType"
+          },
+          "types": {
+            "$ref": "#/components/schemas/HashMap"
+          }
+        }
+      },
+      "OrderRequest": {
+        "type": "object",
+        "description": "API request body for submitting orders - flexible design for multi-adapter support",
+        "required": [
+          "quoteResponse",
+          "signature"
+        ],
+        "properties": {
+          "metadata": {
+            "description": "Adapter-specific metadata that can store order data, sponsor info, and other custom data\nThis allows flexibility for different adapters to include the specific information they need"
+          },
+          "originSubmission": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OriginSubmission"
+              }
+            ]
+          },
+          "quoteResponse": {
+            "$ref": "#/components/schemas/QuoteResponse",
+            "description": "Quote data"
+          },
+          "signature": {
+            "type": "string",
+            "description": "User's signature for authorization"
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "metadata": {
+            "order": "0xfedcba0987654321...",
+            "sponsor": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+          },
+          "originSubmission": {
+            "mode": "user",
+            "schemes": [
+              "erc4337",
+              "permit2"
+            ]
+          },
+          "quoteResponse": {
+            "eta": 30,
+            "failureHandling": "refund-automatic",
+            "integrityChecksum": "hmac-sha256:a1b2c3d4e5f6...",
+            "metadata": {
+              "aggregator": "metadata"
+            },
+            "order": {
+              "payload": {
+                "domain": {
+                  "chainId": 1,
+                  "name": "TestDomain",
+                  "version": "1"
+                },
+                "message": {
+                  "amount": "1000000000000000000",
+                  "inputAsset": "0x01000002147a695FbDB2315678afecb367f032d93F642f64180aa3",
+                  "orderType": "swap",
+                  "outputAsset": "0x01000002147a6a5FbDB2315678afecb367f032d93F642f64180aa3"
+                },
+                "primaryType": "Order",
+                "signatureType": "eip712",
+                "types": {}
+              },
+              "type": "oif-escrow-v0"
+            },
+            "partialFill": false,
+            "preview": {
+              "inputs": [
+                {
+                  "amount": "1000000000000000000",
+                  "asset": "0x01000002147a695FbDB2315678afecb367f032d93F642f64180aa3",
+                  "user": "0x01000002147a6970997970C51812dc3A010C7d01b50e0d17dc79C8"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": "1000000",
+                  "asset": "0x01000002147a6a5FbDB2315678afecb367f032d93F642f64180aa3",
+                  "receiver": "0x01000002147a6a3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+                }
+              ]
+            },
+            "provider": "Example Solver v1.0",
+            "quoteId": "6a22e92f-3e5d-4f05-ab5f-007b01e58b21",
+            "solverId": "example-solver",
+            "validUntil": 1756457492
+          },
+          "signature": "0x1234567890abcdef..."
+        }
+      },
+      "OrderResponse": {
+        "type": "object",
+        "description": "Response body for /v1/orders endpoint (order submission)",
+        "required": [
+          "orderId",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "inputAmounts",
+          "outputAmounts",
+          "settlement"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the response was created"
+          },
+          "fillTransaction": {
+            "description": "Fill transaction information"
+          },
+          "inputAmounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetAmount"
+            },
+            "description": "Input amount"
+          },
+          "orderId": {
+            "type": "string",
+            "description": "The order ID"
+          },
+          "outputAmounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetAmount"
+            },
+            "description": "Output amount"
+          },
+          "quoteId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Quote ID"
+          },
+          "settlement": {
+            "$ref": "#/components/schemas/Settlement",
+            "description": "Settlement information"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus",
+            "description": "Current status of the order"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the response was last updated"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OrderStatus": {
+        "type": "string",
+        "description": "Order execution status",
+        "enum": [
+          "created",
+          "pending",
+          "executing",
+          "executed",
+          "settled",
+          "settling",
+          "finalized",
+          "failed",
+          "refunded"
+        ]
+      },
+      "OriginMode": {
+        "type": "string",
+        "enum": [
+          "user",
+          "protocol"
+        ]
+      },
+      "OriginSubmission": {
+        "type": "object",
+        "description": "Origin submission preference\n\nCore origin submission mechanism that is stable across versions.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/OriginMode"
+          },
+          "schemes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/AuthScheme"
+            }
+          }
+        }
+      },
+      "Output": {
+        "type": "object",
+        "description": "Requested output for a receiver\nSpecifies the desired assets and destination for a swap or transfer.",
+        "required": [
+          "receiver",
+          "asset"
+        ],
+        "properties": {
+          "amount": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/U256",
+                "description": "Amount requested. For quote requests: exact-input (minimum/optional) or exact-output (exact amount)"
+              }
+            ]
+          },
+          "asset": {
+            "$ref": "#/components/schemas/InteropAddress",
+            "description": "Asset address to be received as output"
+          },
+          "calldata": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional calldata describing how the receiver will consume the output"
+          },
+          "receiver": {
+            "$ref": "#/components/schemas/InteropAddress",
+            "description": "Receiver address that will receive the output assets"
+          }
+        },
+        "additionalProperties": false
+      },
+      "QuotePreference": {
+        "type": "string",
+        "description": "Quote optimization preferences following UII standard\n\nCore preferences that remain stable across OIF versions.",
+        "enum": [
+          "price",
+          "speed",
+          "inputPriority",
+          "trustMinimization"
+        ]
+      },
+      "QuotePreview": {
+        "type": "object",
+        "description": "Quote preview for a swap or transfer\nContains the inputs and outputs that represent a quote preview.",
+        "required": [
+          "inputs",
+          "outputs"
+        ],
+        "properties": {
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Input"
+            },
+            "description": "Inputs for the preview"
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Output"
+            },
+            "description": "Outputs for the preview"
+          }
+        },
+        "additionalProperties": false
+      },
+      "QuoteRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/GetQuoteRequest"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "metadata": {
+                "description": "Optional metadata for custom adapter use\nThis allows clients to include adapter-specific information in quote requests"
+              },
+              "solverOptions": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SolverOptions",
+                    "description": "Solver options"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "API request body for /v1/quotes endpoint",
+        "example": {
+          "intent": {
+            "inputs": [
+              {
+                "amount": "1000000000000000000",
+                "asset": "0x01000002147a695FbDB2315678afecb367f032d93F642f64180aa3",
+                "user": "0x01000002147a6970997970C51812dc3A010C7d01b50e0d17dc79C8"
+              }
+            ],
+            "intentType": "oif-swap",
+            "minValidUntil": 600,
+            "outputs": [
+              {
+                "amount": "1000000",
+                "asset": "0x01000002147a6a5FbDB2315678afecb367f032d93F642f64180aa3",
+                "receiver": "0x01000002147a6a3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+              }
+            ],
+            "partialFill": false,
+            "preference": "speed",
+            "swapType": "exact-input"
+          },
+          "solverOptions": {
+            "solverTimeout": 2000,
+            "timeout": 4000
+          }
+        }
+      },
+      "QuoteResponse": {
+        "type": "object",
+        "description": "Response format for individual quotes in the API - closely matches OIF Quote response",
+        "required": [
+          "quoteId",
+          "solverId",
+          "order",
+          "partialFill",
+          "preview",
+          "integrityChecksum"
+        ],
+        "properties": {
+          "eta": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Estimated time to completion in seconds (from OIF)",
+            "minimum": 0
+          },
+          "failureHandling": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FailureHandlingMode",
+                "description": "Failure handling policy for execution (from OIF)"
+              }
+            ]
+          },
+          "integrityChecksum": {
+            "type": "string",
+            "description": "HMAC-SHA256 integrity checksum for quote verification (aggregator-specific)"
+          },
+          "metadata": {
+            "description": "Metadata from the OIF quote (provider-specific)"
+          },
+          "order": {
+            "$ref": "#/components/schemas/Order",
+            "description": "Order from OIF specification (uses latest version)"
+          },
+          "partialFill": {
+            "type": "boolean",
+            "description": "Whether the quote supports partial fill (from OIF)"
+          },
+          "preview": {
+            "$ref": "#/components/schemas/QuotePreview",
+            "description": "Quote preview (from OIF)"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider identifier (from OIF)"
+          },
+          "quoteId": {
+            "type": "string",
+            "description": "Unique identifier for the quote (always present in aggregator responses)"
+          },
+          "solverId": {
+            "type": "string",
+            "description": "ID of the solver that provided this quote (aggregator-specific)"
+          },
+          "validUntil": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Quote validity timestamp (from OIF)",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "eta": 30,
+          "failureHandling": "refund-automatic",
+          "integrityChecksum": "hmac-sha256:a1b2c3d4e5f6...",
+          "metadata": {
+            "aggregator": "metadata"
+          },
+          "order": {
+            "payload": {
+              "domain": {
+                "chainId": 1,
+                "name": "TestDomain",
+                "version": "1"
+              },
+              "message": {
+                "amount": "1000000000000000000",
+                "inputAsset": "0x01000002147a695FbDB2315678afecb367f032d93F642f64180aa3",
+                "orderType": "swap",
+                "outputAsset": "0x01000002147a6a5FbDB2315678afecb367f032d93F642f64180aa3"
+              },
+              "primaryType": "Order",
+              "signatureType": "eip712",
+              "types": {}
+            },
+            "type": "oif-escrow-v0"
+          },
+          "partialFill": false,
+          "preview": {
+            "inputs": [
+              {
+                "amount": "1000000000000000000",
+                "asset": "0x01000002147a695FbDB2315678afecb367f032d93F642f64180aa3",
+                "user": "0x01000002147a6970997970C51812dc3A010C7d01b50e0d17dc79C8"
+              }
+            ],
+            "outputs": [
+              {
+                "amount": "1000000",
+                "asset": "0x01000002147a6a5FbDB2315678afecb367f032d93F642f64180aa3",
+                "receiver": "0x01000002147a6a3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+              }
+            ]
+          },
+          "provider": "Example Solver v1.0",
+          "quoteId": "6a22e92f-3e5d-4f05-ab5f-007b01e58b21",
+          "solverId": "example-solver",
+          "validUntil": 1756457492
+        }
+      },
+      "QuotesResponse": {
+        "type": "object",
+        "description": "Collection of quotes response for API endpoints",
+        "required": [
+          "quotes",
+          "totalQuotes"
+        ],
+        "properties": {
+          "metadata": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AggregationMetadata",
+                "description": "Optional metadata about the aggregation process"
+              }
+            ]
+          },
+          "quotes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuoteResponse"
+            },
+            "description": "List of quotes"
+          },
+          "totalQuotes": {
+            "type": "integer",
+            "description": "Total number of quotes",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "metadata": {
+            "earlyTermination": false,
+            "globalTimeoutMs": 10000,
+            "minQuotesRequired": 30,
+            "solverSelectionMode": "all",
+            "solverTimeoutMs": 5000,
+            "solversQueried": 2,
+            "solversRespondedError": 0,
+            "solversRespondedSuccess": 1,
+            "solversTimedOut": 1,
+            "totalDurationMs": 1500,
+            "totalSolversAvailable": 2
+          },
+          "quotes": [
+            {
+              "eta": 30,
+              "failureHandling": "refund-automatic",
+              "integrityChecksum": "hmac-sha256:a1b2c3d4e5f6...",
+              "metadata": {
+                "aggregator": "metadata"
+              },
+              "order": {
+                "payload": {
+                  "domain": {
+                    "chainId": 1,
+                    "name": "TestDomain",
+                    "version": "1"
+                  },
+                  "message": {
+                    "amount": "1000000000000000000",
+                    "inputAsset": "0x01000002147a695FbDB2315678afecb367f032d93F642f64180aa3",
+                    "orderType": "swap",
+                    "outputAsset": "0x01000002147a6a5FbDB2315678afecb367f032d93F642f64180aa3"
+                  },
+                  "primaryType": "Order",
+                  "signatureType": "eip712",
+                  "types": {}
+                },
+                "type": "oif-escrow-v0"
+              },
+              "partialFill": false,
+              "preview": {
+                "inputs": [
+                  {
+                    "amount": "1000000000000000000",
+                    "asset": "0x01000002147a695FbDB2315678afecb367f032d93F642f64180aa3",
+                    "user": "0x01000002147a6970997970C51812dc3A010C7d01b50e0d17dc79C8"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "amount": "1000000",
+                    "asset": "0x01000002147a6a5FbDB2315678afecb367f032d93F642f64180aa3",
+                    "receiver": "0x01000002147a6a3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+                  }
+                ]
+              },
+              "provider": "Example Solver v1.0",
+              "quoteId": "6a22e92f-3e5d-4f05-ab5f-007b01e58b21",
+              "solverId": "example-solver",
+              "validUntil": 1756457492
+            }
+          ],
+          "totalQuotes": 1
+        }
+      },
+      "Settlement": {
+        "type": "object",
+        "description": "Settlement information for an order\n\nSettlement structure that remains consistent across OIF versions.",
+        "required": [
+          "type",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "description": "Settlement-specific data"
+          },
+          "type": {
+            "$ref": "#/components/schemas/SettlementType",
+            "description": "Settlement mechanism type"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SettlementType": {
+        "type": "string",
+        "description": "Settlement mechanism types\n\nCore settlement mechanisms that are stable across OIF versions.",
+        "enum": [
+          "escrow",
+          "resourceLock"
+        ]
+      },
+      "SignatureType": {
+        "type": "string",
+        "description": "Supported signature types\n\nCore signature mechanisms that remain stable across OIF versions.",
+        "enum": [
+          "eip712",
+          "eip3009"
+        ]
+      },
+      "SolverOptions": {
+        "type": "object",
+        "description": "API request body for /v1/quotes endpoint",
+        "properties": {
+          "excludeSolvers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Solver IDs to exclude from query"
+          },
+          "includeSolvers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Solver IDs to include (overrides circuit breaker Open state with warning)"
+          },
+          "minQuotes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Minimum number of valid quotes required before responding",
+            "minimum": 0
+          },
+          "priorityThreshold": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Min solver confidence threshold",
+            "minimum": 0
+          },
+          "sampleSize": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Max solvers to query in 'sampled' mode",
+            "minimum": 0
+          },
+          "solverSelection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SolverSelection",
+                "description": "Solver selection strategy"
+              }
+            ]
+          },
+          "solverTimeout": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Per-solver timeout (ms) for individual quote responses",
+            "minimum": 0
+          },
+          "timeout": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Overall request timeout (ms) for POST /quotes",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "includeSolvers": [
+            "example-solver"
+          ],
+          "minQuotes": 1,
+          "solverSelection": "all",
+          "solverTimeout": 2000,
+          "timeout": 4000
+        }
+      },
+      "SolverResponse": {
+        "type": "object",
+        "description": "Response format for individual solvers in API",
+        "required": [
+          "solverId",
+          "adapterId",
+          "endpoint",
+          "status",
+          "supportedAssets",
+          "createdAt"
+        ],
+        "properties": {
+          "adapterId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "lastSeen": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "solverId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SolverStatus"
+          },
+          "supportedAssets": {
+            "$ref": "#/components/schemas/SupportedAssetsResponse"
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "adapterId": "oif-adapter-v1",
+          "createdAt": "2025-08-28T00:00:00Z",
+          "description": "An example solver for cross-chain swaps",
+          "endpoint": "https://api.example-solver.com",
+          "lastSeen": "2025-08-28T16:04:52Z",
+          "name": "Example DeFi Solver",
+          "solverId": "example-solver",
+          "status": "active",
+          "supportedAssets": {
+            "assets": [
+              {
+                "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                "chainId": 1,
+                "decimals": 18,
+                "name": "Wrapped Ether",
+                "symbol": "WETH"
+              }
+            ],
+            "source": "autoDiscovered",
+            "type": "assets"
+          }
+        }
+      },
+      "SolverSelection": {
+        "type": "string",
+        "enum": [
+          "all",
+          "sampled",
+          "priority"
+        ]
+      },
+      "SolverStats": {
+        "type": "object",
+        "description": "Solver statistics for health checks and monitoring",
+        "required": [
+          "total",
+          "active",
+          "inactive",
+          "healthy",
+          "unhealthy",
+          "healthDetails"
+        ],
+        "properties": {
+          "active": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "healthDetails": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "healthy": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "inactive": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unhealthy": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "example": {
+          "active": 2,
+          "healthDetails": {
+            "down-solver": false,
+            "example-solver": true,
+            "uniswap-solver": true
+          },
+          "healthy": 2,
+          "inactive": 1,
+          "total": 3,
+          "unhealthy": 1
+        }
+      },
+      "SolverStatus": {
+        "type": "string",
+        "description": "Solver operational status",
+        "enum": [
+          "active",
+          "disabled"
+        ]
+      },
+      "SolversResponse": {
+        "type": "object",
+        "description": "Collection of solvers response for API endpoints",
+        "required": [
+          "solvers",
+          "totalSolvers"
+        ],
+        "properties": {
+          "solvers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SolverResponse"
+            }
+          },
+          "totalSolvers": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "solvers": [
+            {
+              "adapterId": "oif-adapter-v1",
+              "createdAt": "2025-08-28T00:00:00Z",
+              "description": "An example solver for cross-chain swaps",
+              "endpoint": "https://api.example-solver.com",
+              "lastSeen": "2025-08-28T16:04:52Z",
+              "name": "Example DeFi Solver",
+              "solverId": "example-solver",
+              "status": "active",
+              "supportedAssets": {
+                "assets": [
+                  {
+                    "address": "0xA0b86a33E6441E7C81F7C93451777f5F4dE78e86",
+                    "chainId": 1,
+                    "decimals": 6,
+                    "name": "USD Coin",
+                    "symbol": "USDC"
+                  }
+                ],
+                "source": "autoDiscovered",
+                "type": "assets"
+              }
+            },
+            {
+              "adapterId": "uniswap-adapter-v1",
+              "createdAt": "2025-08-28T00:00:00Z",
+              "description": "Uniswap V3 liquidity pools solver",
+              "endpoint": "https://api.uniswap.solver.com",
+              "lastSeen": "2025-08-28T16:04:50Z",
+              "name": "Uniswap V3 Solver",
+              "solverId": "uniswap-solver",
+              "status": "active",
+              "supportedAssets": {
+                "routes": [
+                  {
+                    "destinationChainId": 137,
+                    "destinationTokenAddress": "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
+                    "destinationTokenSymbol": "WETH",
+                    "originChainId": 1,
+                    "originTokenAddress": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                    "originTokenSymbol": "WETH"
+                  }
+                ],
+                "source": "config",
+                "type": "routes"
+              }
+            }
+          ],
+          "totalSolvers": 2
+        }
+      },
+      "StorageHealthInfo": {
+        "type": "object",
+        "description": "Storage health information",
+        "required": [
+          "healthy",
+          "backend"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "healthy": {
+            "type": "boolean"
+          }
+        },
+        "example": {
+          "backend": "memory",
+          "healthy": true
+        }
+      },
+      "SupportedAssetsResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Asset-based: supports any-to-any within asset list (including same-chain)",
+            "required": [
+              "assets",
+              "source",
+              "type"
+            ],
+            "properties": {
+              "assets": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AssetResponse"
+                }
+              },
+              "source": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "assets"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Route-based: supports specific origin->destination pairs",
+            "required": [
+              "routes",
+              "source",
+              "type"
+            ],
+            "properties": {
+              "routes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AssetRouteResponse"
+                }
+              },
+              "source": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "routes"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Supported assets response format for API"
+      },
+      "SwapType": {
+        "type": "string",
+        "description": "Order interpretation for quote requests\n\nCore swap types that remain stable across OIF versions.",
+        "enum": [
+          "exact-input",
+          "exact-output"
+        ]
+      },
+      "U256": {
+        "type": "string",
+        "description": "U256 value represented as a string to preserve precision\n\nUsed for handling large integer values that might overflow native integer types"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "quotes",
+      "description": "Request and manage price quotes from multiple solvers for cross-chain transactions"
+    },
+    {
+      "name": "orders",
+      "description": "Submit, track, and manage cross-chain orders through the aggregator"
+    },
+    {
+      "name": "health",
+      "description": "System health checks and diagnostics for monitoring service status"
+    },
+    {
+      "name": "solvers",
+      "description": "Discover and interact with available solvers and their capabilities"
+    }
+  ]
+}

@@ -1,0 +1,146 @@
+---
+title: OIF Adapter Guide
+description: Learn how the OIF Adapter integrates with OIF-compatible solvers, supporting JWT authentication and advanced client caching.
+---
+
+## Overview
+
+The OIF Adapter (`oif-v1`) implements the standard OIF protocol and serves as the **reference implementation** for building custom adapters. It demonstrates:
+
+- **JWT Authentication** — Automatic token registration and refresh  
+- **HTTP Client Caching** — Optimized connection pooling with authentication  
+- **Flexible Configuration** — Use `adapter_metadata` for customization  
+- **Robust Error Handling** — Built-in retry and failure protection  
+
+---
+
+## Basic Configuration
+
+### Minimal Setup
+
+```json
+{
+  "solvers": {
+    "oif-solver-1": {
+      "solver_id": "oif-solver-1",
+      "adapter_id": "oif-v1",
+      "endpoint": "https://example.com/api",
+      "enabled": true,
+      "name": "OIF Solver",
+      "description": "OIF solver"
+    }
+  }
+}
+```
+
+### Configuration with Headers
+
+```json
+{
+  "solvers": {
+    "oif-solver-1": {
+      "solver_id": "oif-solver-1",
+      "adapter_id": "oif-v1",
+      "endpoint": "https://api.oif-solver.com",
+      "enabled": true,
+      "headers": {
+        "X-Client-Version": "1.0.0"
+      }
+    }
+  }
+}
+```
+
+---
+
+## JWT Authentication
+
+The OIF Adapter supports automatic **JWT-based authentication** via `adapter_metadata`. When enabled, it automatically:
+
+1. Registers with the OIF solver via `/register`  
+2. Caches JWT tokens per solver instance  
+3. Refreshes tokens when they expire  
+4. Adds `Authorization: Bearer <token>` to all requests  
+
+### Basic Setup
+
+```json
+{
+  "solvers": {
+    "oif-solver-1": {
+      "solver_id": "oif-solver-1",
+      "adapter_id": "oif-v1",
+      "endpoint": "https://api.oif-solver.com",
+      "enabled": true,
+      "adapter_metadata": {
+        "auth": {
+          "auth_enabled": true
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+### Advanced Configuration
+
+```json
+{
+  "solvers": {
+    "oif-solver-1": {
+      "solver_id": "oif-solver-1",
+      "adapter_id": "oif-v1",
+      "endpoint": "https://api.oif-solver.com",
+      "enabled": true,
+      "adapter_metadata": {
+        "auth": {
+          "auth_enabled": true,
+          "client_name": "Production OIF Aggregator",
+          "scopes": ["read-orders", "create-orders"],
+          "expiry_hours": 48
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+### JWT Configuration Options
+
+| Field | Type | Default | Description |
+|-------|------|----------|-------------|
+| `auth_enabled` | `boolean` | `false` | Enables JWT authentication |
+| `client_name` | `string` | `"OIF Aggregator - {solver_id}"` | Client registration name |
+| `scopes` | `string[]` | `["read-orders", "create-orders"]` | Access scopes requested |
+| `expiry_hours` | `number` | `24` | Token expiration in hours |
+
+---
+
+## HTTP Client Caching
+
+The OIF Adapter leverages the **ClientCache** system for performance and reliability:
+
+```rust
+// Client retrieval with JWT token awareness
+let client = self.cache.get_configured_client(config)?;
+
+// Benefits:
+// - Connection pooling (up to 10 idle connections per host)
+// - Persistent keep-alive (90s reuse)
+// - HTTP/2 support
+// - Token-aware caching (unique client per JWT)
+// - Thread-safe concurrent access
+```
+
+<Callout type="tip">
+  **Performance Tip:** Reuse the client across adapters to minimize connection setup time and reduce latency.
+</Callout>
+
+---
+
+**Source Code:**  
+See `crates/adapters/src/oif_adapter.rs` for the complete reference implementation.

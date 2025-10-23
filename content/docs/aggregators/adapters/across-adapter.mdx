@@ -1,0 +1,147 @@
+---
+title: Across Adapter Guide
+description: Learn how to use the Across Adapter to integrate the Across Protocol with the OIF Aggregator for cross-chain bridging.
+---
+
+# Across Adapter Guide
+
+The **Across Adapter** provides seamless integration with the **Across Protocol**, enabling cross-chain bridge operations with advanced configuration options through request metadata.
+
+---
+
+## Overview
+
+The Across Adapter (`across-v1`) implements the Across Protocol API and provides:
+
+- **Cross-Chain Bridge Quotes** — Retrieve quotes for bridging tokens across chains  
+- **Dynamic Query Parameters** — Configure via `requestParams` metadata  
+- **HTTP Client Caching** — Optimized connection pooling and keep-alive  
+- **Robust Error Handling** — Comprehensive validation and error reporting  
+
+<Callout type="info">
+  **Note**: Order submission and tracking are *not currently supported*. These will be added in future releases through the official Across SDK integration.
+</Callout>
+
+---
+
+## Basic Configuration
+
+### Minimal Setup
+
+```json
+{
+  "solvers": {
+    "across-solver": {
+      "solver_id": "across-solver",
+      "adapter_id": "across-v1",
+      "endpoint": "https://app.across.to/api",
+      "enabled": true,
+      "name": "Across Protocol",
+      "description": "Across Protocol"
+    }
+  }
+}
+```
+
+---
+
+## Request Parameters
+
+The Across Adapter supports customization through the `metadata.requestParams` field in `GetQuoteRequest`.  
+These parameters are passed directly to the Across Protocol API.
+
+### Example Request
+
+```json
+{
+  "user": "0x01000002147a6970997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "intent": {
+    "intentType": "oif-swap",
+    "inputs": [...],
+    "outputs": [...],
+    "swapType": "exact-input"
+  },
+  "supportedTypes": ["oif-escrow-v0"],
+  "metadata": {
+    "requestParams": {
+      "slippage": 1,
+      "integratorId": "my-dapp"
+    }
+  }
+}
+```
+
+<Callout type="tip">
+ **Tip**: Numeric parameters such as `slippage` and `appFee` accept both numbers (`5`) and strings (`"5"`) for flexibility.
+</Callout>
+
+---
+
+### Available Request Parameters
+
+| Parameter | Type | Description |
+|------------|------|-------------|
+| `integratorId` | `string` | 2-byte hex-string that identifies the integrator (e.g., `"0xdead"`) |
+| `refundAddress` | `string` | Address to receive refunds |
+| `refundOnOrigin` | `boolean` | Refund sent on origin chain if `true` |
+| `slippage` | `number` | Slippage tolerance (%) (e.g., `1` = 1%) |
+| `skipOriginTxEstimation` | `boolean` | Skip transaction estimation on origin chain |
+| `excludeSources` | `string` | Comma-separated list of sources to exclude |
+| `includeSources` | `string` | Comma-separated list of sources to include (mutually exclusive with `excludeSources`) |
+| `appFee` | `string` | Application fee percentage (e.g., `"0.001"` = 0.1%) |
+| `appFeeRecipient` | `string` | Address to receive app fees |
+| `strictTradeType` | `boolean` | Strictly enforce the provided trade type |
+
+<Callout type="info">
+  **Complete API Reference**: See the [Across API documentation](https://docs.across.to/reference/api-reference#get-swap-approval) for parameter defaults and limits.
+</Callout>
+
+---
+
+## Additional Resources
+
+### Across Protocol Documentation
+
+- [Across Protocol Docs](https://docs.across.to/) — Official documentation  
+- [API Reference](https://docs.across.to/reference/api-reference) — REST API details  
+- [SDK Documentation](https://docs.across.to/reference/app-sdk-reference) — TypeScript SDK  
+
+## Troubleshooting
+
+### Common Issues
+
+**Invalid Response Error**
+```
+Failed to parse Across swap response
+```
+ Enable debug logging to inspect the full response  
+ Verify chain IDs and token addresses  
+ Ensure tokens are supported on both origin and destination chains
+
+**Missing Request Parameters**
+```
+Using default query parameters (no requestParams in metadata)
+```
+ Add a `requestParams` object to your request metadata  
+ Confirm parameter names match Across API documentation  
+
+---
+
+### Debug Mode
+
+Enable debug logging for detailed request and response output:
+
+```bash
+RUST_LOG=debug cargo run
+```
+
+You’ll see:
+- Built query parameters  
+- Full API responses  
+- Client cache metrics  
+- Detailed error context  
+
+---
+
+**Source Code:**  
+See `crates/adapters/src/across_adapter.rs` for the full implementation.

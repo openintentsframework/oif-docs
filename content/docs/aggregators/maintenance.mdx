@@ -1,0 +1,55 @@
+---
+title: Maintenance and Cleanup Configuration
+description: Learn how to configure automatic maintenance and order cleanup in the OIF Aggregator.
+---
+
+##  Order Cleanup
+
+The OIF Aggregator automatically removes **old orders in final status** to optimize memory usage and ensure long-term stability.
+
+### Configuration
+
+You can configure order cleanup in your configuration file.
+
+#### Example Configuration
+
+```json
+{
+  "maintenance": {
+    "order_retention_days": 30
+  }
+}
+```
+
+<Callout type="info">
+  **Note**: The `maintenance` section is optional. If omitted, default values are applied automatically.
+</Callout>
+
+---
+
+### Default Value
+
+If no configuration is provided, orders are retained for **10 days** by default.
+
+---
+
+## How It Works
+
+- **Scheduled Job** — Runs automatically every 24 hours  
+- **Target Orders** — Orders in a final state (`Finalized` or `Failed`)  
+- **Age Criteria** — Orders older than the configured retention period  
+- **Storage Cleanup** — Removes stale orders from in-memory storage  
+
+---
+
+### Behavior Overview
+
+1. **System Startup** — Schedules the cleanup job (does not execute immediately)  
+2. **Daily Execution** — Triggered automatically every 24 hours  
+3. **Order Selection** — Finds finalized/failed orders older than `order_retention_days`  
+4. **Cleanup Process** — Deletes eligible orders from storage  
+5. **Logging** — Outputs count and details of deleted orders  
+
+<Callout type="tip">
+  Regular cleanup ensures stable memory usage in long-running deployments of the OIF Aggregator.
+</Callout>

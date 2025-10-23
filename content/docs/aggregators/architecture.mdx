@@ -1,0 +1,48 @@
+---
+title: Architecture
+description: Overview of the modular architecture and key components of the OIF Aggregator.
+---
+
+# Architecture
+
+The OIF Aggregator follows a modular, crate-based architecture with clear separation of concerns.
+
+## Diagram
+
+```mermaid
+graph TD
+    A[HTTP Requests] --> B[API Layer<br/>oif-api]
+    B --> C[Aggregator Service<br/>oif-service]
+    C --> D[Solver Service<br/>oif-service]
+    C --> E[Order Service<br/>oif-service]
+    D --> F[Adapter Registry<br/>oif-adapters]
+    F --> G[OIF Adapter]
+    F --> H[Custom Adapters]
+    E --> I[Storage Layer<br/>oif-storage]
+    G --> J[OIF-Compatible<br/>Solvers]
+    H --> K[External Solver<br/>APIs]
+```
+
+## Crate Structure
+
+- `crates/types/` : Core domain models and types
+- `crates/service/` : Business logic and aggregation
+- `crates/api/` : HTTP API and routing
+- `crates/storage/` : Storage abstractions and implementations
+- `crates/adapters/` : Solver adapter implementations
+- `crates/config/` : Configuration loading and management
+- `config/` : JSON configuration
+- `examples/` : Usage examples and demos
+- `src/` : Main library and binary
+
+## Key Components
+
+- `AggregatorService` - Core quote aggregation logic
+- `OrderService` - Intent submission and tracking
+- `SolverService` - Solver management and discovery
+- `CircuitBreakerService` - Automatic failure protection and recovery
+- `SolverFilterService` - Smart solver selection and filtering
+- `AdapterRegistry` - Manages protocol adapters (OIF, custom)
+- `Storage` - Trait for persistence (memory, Redis)
+- `IntegrityService` - HMAC-SHA256 quote verification
+- `BackgroundJobHandler` - Async metrics processing and state management

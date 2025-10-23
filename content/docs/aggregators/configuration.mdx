@@ -1,0 +1,323 @@
+---
+title: Configuration Guide
+description: Learn how to configure the OIF Aggregator using environment variables, JSON configuration files, and runtime settings.
+---
+
+## Configuration Methods
+
+The OIF Aggregator supports multiple configuration methods with the following precedence (highest to lowest):
+
+1. **Environment Variables** — Override any configuration setting  
+2. **JSON Configuration File** — Structured configuration in `config/config.json`  
+3. **Default Values** — Built-in sensible defaults
+
+---
+
+## Environment Variables
+
+<Callout type="info">
+  **Docker Users**: See the [Docker Guide](./docker) for complete environment variable setup in containerized deployments.
+</Callout>
+
+### Required Variables
+
+#### `INTEGRITY_SECRET`
+
+**Required for production use**
+
+- **Purpose:** HMAC-SHA256 key for quote integrity verification  
+- **Format:** String (minimum 32 characters recommended)  
+- **Example:**  
+  ```bash
+  export INTEGRITY_SECRET="your-secure-random-string-minimum-32-chars"
+  ```
+- **Security:** Use a cryptographically secure random string
+
+---
+
+### Optional Environment Variables
+
+#### Server Configuration
+
+```bash
+# Server binding configuration
+export HOST="0.0.0.0"              # Default: "0.0.0.0"
+export PORT="4000"                 # Default: 4000
+
+# Logging configuration
+export RUST_LOG="info"             # Default: "info"
+# Levels: error, warn, info, debug, trace
+```
+
+### Environment Variable Overrides
+
+All JSON configuration can be overridden using environment variables:
+
+```bash
+# Override server settings
+export HOST="0.0.0.0"
+export PORT="8080"
+
+# Override log settings
+export RUST_LOG=info
+```
+
+---
+
+## JSON Configuration
+
+### Configuration File Location
+
+Place your configuration file at:  
+`config/config.json`
+
+### Complete Configuration Example
+
+```json
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 4000
+  },
+  "solvers": {
+    "example-solver": {
+      "solver_id": "example-solver",
+      "adapter_id": "oif-v1",
+      "endpoint": "http://127.0.0.1:3000/api",
+      "enabled": true,
+      "headers": null,
+      "name": "OIF Solver",
+      "description": "OIF Solver Description"
+    }
+  },
+  "aggregation": {
+    "global_timeout_ms": 4000,
+    "per_solver_timeout_ms": 2000,
+    "max_concurrent_solvers": 50,
+    "max_retries_per_solver": 2,
+    "retry_delay_ms": 100
+  },
+  "environment": {
+    "rate_limiting": {
+      "enabled": false,
+      "requests_per_minute": 1000,
+      "burst_size": 100
+    }
+  },
+  "circuit_breaker": {
+    "enabled": true,
+    "failure_threshold": 5,
+    "success_rate_threshold": 0.2,
+    "min_requests_for_rate_check": 30,
+    "base_timeout_seconds": 10,
+    "max_timeout_seconds": 600,
+    "half_open_max_calls": 5,
+    "max_recovery_attempts": 10,
+    "persistent_failure_action": "ExtendTimeout",
+    "metrics_max_age_minutes": 30,
+    "service_error_threshold": 0.2,
+    "metrics_window_duration_minutes": 15,
+    "metrics_max_window_age_minutes": 60
+  },
+  "logging": {
+    "level": "debug",
+    "format": "compact",
+    "structured": false
+  },
+  "security": {
+    "integrity_secret": {
+      "type": "env",
+      "value": "INTEGRITY_SECRET"
+    }
+  }
+}
+```
+
+---
+
+## Configuration Sections
+
+### Server Configuration
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3000
+  }
+}
+```
+
+**Environment Override:** `HOST`, `PORT`
+
+---
+
+### Solver Configuration
+
+Define external solvers that the aggregator will query:
+
+```json
+{
+  "solvers": {
+    "solver-id": {
+      "solver_id": "unique-identifier",
+      "adapter_id": "oif-v1",
+      "endpoint": "https://api.url",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer token",
+        "X-Custom": "value"
+      },
+      "name": "Display Name",
+      "description": "Solver description"
+    }
+  }
+}
+```
+
+**Supported Adapters:**
+- `oif-v1` — Standard OIF protocol  
+- `across-v1` — Across protocol (Limited support)
+- Custom adapters can be implemented
+
+#### Supported Assets Configuration
+
+<Tabs items={['Assets Mode', 'Routes Mode']}>
+<Tab value="Assets Mode">
+
+```json
+{
+  "solver_id": "oif-solver",
+  "adapter_id": "oif-v1",
+  "endpoint": "https://api.solver.com",
+  "enabled": true,
+  "supported_assets": {
+    "type": "assets",
+    "assets": [
+      {
+        "chain_id": 1,
+        "address": "0xA0b86a33E6441e3A1Fa1E0c3e1b6f8c5d6f8e9a0",
+        "symbol": "USDC"
+      },
+      {
+        "chain_id": 137,
+        "address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        "symbol": "USDC"
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+<Tab value="Routes Mode">
+
+```json
+{
+  "solver_id": "across-solver",
+  "adapter_id": "across-v1",
+  "endpoint": "https://api.across.to",
+  "enabled": true,
+  "supported_assets": {
+    "type": "routes",
+    "assets": [
+      {
+        "origin_chain_id": 1,
+        "origin_token_address": "0xA0b86a33E6441e3A1Fa1E0c3e1b6f8c5d6f8e9a0",
+        "origin_token_symbol": "USDC",
+        "destination_chain_id": 137,
+        "destination_token_address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        "destination_token_symbol": "USDC"
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+**Auto-Discovery:**  
+If `supported_assets` is omitted or empty, the aggregator will auto-discover assets/routes from the solver's API.
+
+---
+
+### Aggregation Configuration
+
+```json
+{
+  "aggregation": {
+    "global_timeout_ms": 5000,
+    "per_solver_timeout_ms": 2000,
+    "max_concurrent_solvers": 50,
+    "max_retries_per_solver": 2,
+    "retry_delay_ms": 100,
+    "include_unknown_compatibility": false
+  }
+}
+```
+
+---
+
+### Logging Configuration
+
+```json
+{
+  "logging": {
+    "level": "debug",
+    "format": "compact",
+    "structured": false
+  }
+}
+```
+
+**Environment Override:** `RUST_LOG`
+
+---
+
+### Circuit Breaker Configuration
+
+```json
+{
+  "circuit_breaker": {
+    "enabled": true,
+    "failure_threshold": 5,
+    "success_rate_threshold": 0.2,
+    "min_requests_for_rate_check": 30,
+    "base_timeout_seconds": 10,
+    "max_timeout_seconds": 600,
+    "half_open_max_calls": 5,
+    "max_recovery_attempts": 10,
+    "persistent_failure_action": "ExtendTimeout",
+    "metrics_max_age_minutes": 30,
+    "service_error_threshold": 0.2,
+    "metrics_window_duration_minutes": 15,
+    "metrics_max_window_age_minutes": 60
+  }
+}
+```
+
+<Callout type="tip">
+The circuit breaker protects against cascading failures by blocking failing solvers and gradually recovering.
+</Callout>
+
+---
+
+## Configuration Best Practices
+
+### Security
+- Always use environment variables for secrets  
+- Use strong, random integrity secrets (32+ characters)  
+- Enable rate limiting in production  
+
+### Performance
+- Set appropriate timeouts based on solver latency  
+- Limit concurrency to prevent overload  
+
+### Reliability
+- Configure multiple solvers for redundancy  
+- Monitor circuit breaker state changes  
+
+### Development
+- Use different configs for dev/staging/production  
+- Avoid committing secrets  

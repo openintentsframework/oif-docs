@@ -1,19 +1,56 @@
 ---
-title: Quickstart
-description: Run a minimal aggregator locally
+title: Quick Start Guide
+description: Get up and running with the OIF Aggregator quickly, including setup and examples.
 ---
 
-Bring up a local aggregator for development.
+<Callout title="Prerequisites">
+- Rust 1.75+
+- Git
+- Optional: Docker for containerized deployment (see [Docker Guide](/docs/aggregators/docker))
+</Callout>
 
-### Prerequisites
+## TL;DR
 
-- Node.js 18+
-- Postgres or SQLite
+```bash
+git clone https://github.com/openintentsframework/oif-aggregator.git
+cd oif-aggregator
+export INTEGRITY_SECRET="your-secure-random-string-minimum-32-chars"
+cp config/config.example.json config/config.json
+cargo run
+```
 
-### Steps
+## Setup Steps
 
-1. Scaffold server project
-2. Implement ingestion endpoint
-3. Broadcast intents to solvers (websocket)
-4. Implement selection policy and settlement hooks
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/openintentsframework/oif-aggregator.git
+   cd oif-aggregator
+   ```
 
+2. **Set the Integrity Secret**:
+   Set the required environment variable for HMAC-SHA256 quote verification:
+   ```bash
+   export INTEGRITY_SECRET="your-secure-random-string-minimum-32-chars"
+   ```
+   Ensure the secret is at least 32 characters for security.
+
+3. **Configure the Application**:
+   Copy the example configuration and customize as needed:
+   ```bash
+   cp config/config.example.json config/config.json
+   ```
+   Edit `config.json` for settings like port or solver endpoints (see [Configuration](/docs/aggregators/configuration) for details).
+
+4. **Run the Aggregator**:
+   Start the server:
+   ```bash
+   cargo run
+   ```
+   The server runs on `http://localhost:4000` by default.
+
+5. **Test the Setup**:
+   Verify the aggregator is running by sending a request to its health endpoint:
+
+   ```bash
+   curl http://localhost:4000/health
+   ```

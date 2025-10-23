@@ -3,17 +3,273 @@ title: Quickstart
 description: Deploy and interact with OIF contracts locally
 ---
 
-Get a local environment running and deploy core contracts.
+# Smart Contracts Quickstart
 
-### Prerequisites
+This guide will help you set up a local development environment and deploy OIF contracts.
 
-- Node.js 18+
-- Foundry or Hardhat
+## Prerequisites
 
-### Steps
+Before you begin, ensure you have the following installed:
 
-1. Clone contracts repo (coming soon)
-2. Install deps and build
-3. Deploy `Registry` and `Escrow`
-4. Verify addresses and run a sample intent
+- **Foundry**: The Ethereum development toolkit
+- **Git**: For cloning repositories
+- **Node.js 18+**: (Optional) For additional tooling
+
+### Install Foundry
+
+If you haven't installed Foundry yet:
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+```
+
+## Setup
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/openintentsframework/oif-contracts.git
+cd oif-contracts
+```
+
+### 2. Install Dependencies
+
+Foundry will automatically install Solidity dependencies when you build:
+
+```bash
+forge install
+```
+
+### 3. Build Contracts
+
+Compile all contracts to ensure everything is set up correctly:
+
+```bash
+forge build
+```
+
+You can optionally check contract sizes:
+
+```bash
+forge build --sizes
+```
+
+## Running Tests
+
+OIF contracts include comprehensive test coverage. Run the test suite:
+
+```bash
+forge test
+```
+
+For verbose output with logs:
+
+```bash
+forge test -vvv
+```
+
+Run specific tests:
+
+```bash
+forge test --match-contract InputSettlerTest
+forge test --match-test testFillIntent
+```
+
+## Local Deployment
+
+### 1. Start a Local Node
+
+In a separate terminal, start a local Ethereum node:
+
+```bash
+anvil
+```
+
+Anvil will start with 10 pre-funded accounts. Note the RPC URL (typically `http://127.0.0.1:8545`).
+
+### 2. Deploy Contracts
+
+Create a deployment script or use Foundry's scripting capabilities. Here's a basic example:
+
+```solidity
+// script/Deploy.s.sol
+pragma solidity ^0.8.27;
+
+import {Script} from "forge-std/Script.sol";
+import {InputSettlerEscrow} from "../src/input/escrow/InputSettlerEscrow.sol";
+import {OutputSettler} from "../src/output/OutputSettler.sol";
+import {MockOracle} from "../test/mocks/MockOracle.sol";
+
+contract DeployScript is Script {
+    function run() external {
+        vm.startBroadcast();
+        
+        // Deploy Oracle
+        MockOracle oracle = new MockOracle();
+        
+        // Deploy InputSettler
+        InputSettlerEscrow inputSettler = new InputSettlerEscrow(
+            address(oracle)
+        );
+        
+        // Deploy OutputSettler
+        OutputSettler outputSettler = new OutputSettler();
+        
+        vm.stopBroadcast();
+        
+        console.log("Oracle:", address(oracle));
+        console.log("InputSettler:", address(inputSettler));
+        console.log("OutputSettler:", address(outputSettler));
+    }
+}
+```
+
+Deploy to your local node:
+
+```bash
+forge script script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast --private-key <ANVIL_PRIVATE_KEY>
+```
+
+## Testing an Intent Flow
+
+### 1. Setup Token Approvals
+
+Before submitting an intent, approve the InputSettler to spend your input tokens:
+
+```solidity
+// For ERC-20 tokens
+token.approve(address(inputSettler), amount);
+
+// For Permit2 (used with Compact)
+permit2.approve(tokenAddress, address(inputSettler), amount, expiration);
+```
+
+### 2. Create and Submit an Intent
+
+```solidity
+// Define intent parameters
+Intent memory intent = Intent({
+    sponsor: msg.sender,
+    outputs: outputs,  // Array of desired outputs
+    inputs: inputs,    // Array of inputs to lock
+    fillDeadline: block.timestamp + 1 hours,
+    expiry: block.timestamp + 24 hours
+});
+
+// Submit to InputSettler
+bytes32 intentHash = inputSettler.submitIntent(intent);
+```
+
+### 3. Fill Outputs (Solver Action)
+
+On the output chain, a solver fills the outputs:
+
+```solidity
+// Solver approves tokens
+outputToken.approve(address(outputSettler), outputAmount);
+
+// Fill the output
+outputSettler.fillOutput(
+    intentHash,
+    outputIndex,
+    recipient,
+    amount
+);
+```
+
+### 4. Validate and Claim (Solver Action)
+
+After filling outputs, the solver validates on the input chain:
+
+```solidity
+// Oracle generates proof
+oracle.submitProof(intentHash, outputChainId, proof);
+
+// Solver claims inputs
+inputSettler.claimInputs(intentHash);
+```
+
+## Coverage Reports
+
+Generate coverage reports to see test coverage:
+
+```bash
+forge coverage --no-match-coverage "(script|test|integrations/oracles/.*/external)"
+```
+
+For LCOV format (compatible with coverage viewers):
+
+```bash
+forge coverage --no-match-coverage "(script|test|integrations/oracles/.*/external)" --report lcov
+```
+
+## Contract Structure
+
+After deployment, you'll have the following key contracts:
+
+```
+├── InputSettler (Input Chain)
+│   ├── Locks user input assets
+│   ├── Validates oracle proofs
+│   └── Releases assets to solvers
+│
+├── OutputSettler (Output Chain)
+│   ├── Accepts output fills from solvers
+│   ├── Generates attestations
+│   └── Validates payload integrity
+│
+└── Oracle (Input Chain)
+    ├── Receives cross-chain proofs
+    ├── Validates output fills
+    └── Provides attestation interface
+```
+
+## Common Issues
+
+### Build Errors
+
+If you encounter build errors, try:
+
+```bash
+forge clean
+forge install --force
+forge build
+```
+
+### Gas Estimation Failures
+
+Some tests may fail with gas estimation errors on certain networks. This is often due to:
+- Insufficient funds in test accounts
+- Incorrect RPC configuration
+- Network-specific gas limits
+
+### Submodule Issues
+
+If git submodules are not initialized:
+
+```bash
+git submodule update --init --recursive
+```
+
+## Next Steps
+
+Now that you have contracts deployed locally:
+
+1. **Explore Examples**: Check the `examples/` directory for usage patterns
+2. **Read Contract Documentation**: Review inline documentation in contract files
+3. **Integration Testing**: Try integrating with a local solver instance
+4. **Core Contracts Deep Dive**: Learn about specific implementations in [Core Contracts](/docs/smart-contracts/core-contracts)
+
+## Additional Resources
+
+- **Foundry Book**: [https://book.getfoundry.sh/](https://book.getfoundry.sh/)
+- **OIF Contracts Repo**: [https://github.com/openintentsframework/oif-contracts](https://github.com/openintentsframework/oif-contracts)
+- **Solidity Documentation**: [https://docs.soliditylang.org/](https://docs.soliditylang.org/)
+
+## Getting Help
+
+- Open an issue on [GitHub](https://github.com/openintentsframework/oif-contracts/issues)
+- Join the community discussions
+- Check existing issues for similar problems
 

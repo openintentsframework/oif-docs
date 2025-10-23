@@ -1,54 +1,31 @@
 ---
-title: OIF Aggregator
-description: A high-performance aggregator for Open Intent Framework (OIF) solvers, providing quote aggregation, intent submission, and solver management.
+title: Aggregators
+description: High-performance aggregator for Open Intent Framework solvers
 ---
 
-# OIF Aggregator
+# Aggregators
 
-A high-performance aggregator for Open Intent Framework (OIF) solvers, providing quote aggregation, intent submission, and solver management.
+The OIF Aggregator provides quote aggregation from multiple solvers, intent routing, and order tracking for the Open Intents Framework.
 
-## Features
+## Why Run an Aggregator?
 
-### Core Capabilities
+- **Control**: Full control over solver selection and routing logic
+- **Privacy**: Keep user intents private within your infrastructure
+- **Customization**: Implement custom quote selection and solver scoring
+- **Reliability**: Eliminate dependence on third-party services
 
-- Multi-Solver Quote Aggregation - Fetch quotes from multiple DeFi solvers concurrently
-- ERC-7930 Compliance - Full support for the Open Intent Framework standard
-- Intent-Based Architecture - Submit intents and track execution through to settlement
-- Integrity Verification - HMAC-SHA256 checksums prevent quote tampering
-- Circuit Breaker Protection - Automatic failure detection and recovery for failing solvers
-- Performance Metrics - Real-time solver performance monitoring and analytics
-- Flexible Storage - In-memory storage backend
-- Rate Limiting - Built-in IP-based rate limiting
+## Documentation
 
-### Extensibility
+<Cards>
+  <Card title="Overview" href="/docs/aggregators/overview" description="Learn about aggregator architecture and features" />
+  <Card title="Quickstart" href="/docs/aggregators/quickstart" description="Run your first aggregator in minutes" />
+  <Card title="Configuration" href="/docs/aggregators/configuration" description="Configure solvers, auth, and settings" />
+  <Card title="Architecture" href="/docs/aggregators/architecture" description="Deep dive into design and components" />
+</Cards>
 
-- Custom Adapters - Easily integrate new solver protocols
-- Builder Pattern - Flexible programmatic configuration
-- Pluggable Authentication - Multiple auth strategies (API keys, none, custom)
-- Configurable Timeouts - Per-solver and global timeout management
+## Quick Links
 
-### Performance & Reliability
-
-- Async/Await - Built on Tokio for high concurrency
-- Circuit Breaker Pattern - Prevents cascading failures with exponential backoff
-- Solver Health Monitoring - Real-time success rates and error tracking
-- Smart Filtering - Intelligent solver selection based on performance metrics
-- Error Handling - Comprehensive error types and recovery
-- Structured Logging - JSON and pretty-print log formats
-
-## API Endpoints
-
-Once running, the following endpoints are available:
-
-- `GET /health` - Health check
-- `POST /v1/quotes` - Get quotes from multiple solvers
-- `POST /v1/orders` - Submit order for execution
-- `GET /v1/orders/{id}` - Get order
-- `GET /v1/solvers` - List all solvers
-- `GET /v1/solvers/{id}` - Get solver details
-- `GET /swagger-ui` - Swagger UI - Available when run with openapi feature
-- `GET /api-docs/openapi.json` - OpenAPI specification - Available when run with openapi feature
-
-For interactive API documentation, run with `--features openapi`.
-
-See [API Reference](./api-reference.mdx) for detailed OpenAPI playground.
+- **Getting Started**: [Quickstart Guide](/docs/aggregators/quickstart)
+- **Configuration**: [Configuration Guide](/docs/aggregators/configuration)
+- **API Integration**: [API Documentation](/docs/apis)
+- **Custom Adapters**: [Adapter Development](/docs/aggregators/custom-adapter)

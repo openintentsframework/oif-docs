@@ -1,0 +1,405 @@
+---
+title: Rate Limits
+description: API rate limiting policies and best practices
+---
+
+# Rate Limits
+
+OIF Aggregator implements rate limiting to ensure fair usage and prevent abuse.
+
+## Default Limits
+
+| Endpoint | Limit | Burst | Scope |
+|----------|-------|-------|-------|
+| `POST /v1/quotes` | 100/min | 10/sec | Per IP |
+| `POST /v1/orders` | 10/min | 2/sec | Per IP |
+| `GET /v1/orders/:id` | 100/min | 20/sec | Per IP |
+| `GET /v1/solvers` | 100/min | 20/sec | Per IP |
+| `GET /v1/solvers/:id` | 100/min | 20/sec | Per IP |
+| `GET /health` | Unlimited | Unlimited | - |
+
+## Rate Limit Headers
+
+Responses include rate limit information:
+
+```
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1703123516
+```
+
+### Header Descriptions
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Maximum requests allowed in window |
+| `X-RateLimit-Remaining` | Requests remaining in current window |
+| `X-RateLimit-Reset` | Unix timestamp when limit resets |
+
+## Rate Limit Exceeded Response
+
+**HTTP Status**: 429 Too Many Requests
+
+```json
+{
+  "error": "RATE_LIMIT_EXCEEDED",
+  "message": "Rate limit exceeded. Try again in 30 seconds.",
+  "timestamp": 1703123456,
+  "retryAfter": 30
+}
+```
+
+## Configuration
+
+### Programmatic Configuration
+
+```rust
+use oif_aggregator::{AggregatorBuilder, MemoryRateLimiter};
+
+AggregatorBuilder::new()
+    .with_rate_limiter(MemoryRateLimiter::with_limits(
+        100,  // requests per minute
+        10    // burst capacity
+    ))
+    .start_server()
+    .await
+```
+
+### Per-Endpoint Configuration
+
+```rust
+use oif_aggregator::RateLimitConfig;
+
+let config = RateLimitConfig {
+    quotes: RateLimit { per_minute: 100, burst: 10 },
+    orders: RateLimit { per_minute: 10, burst: 2 },
+    queries: RateLimit { per_minute: 100, burst: 20 },
+};
+```
+
+## Handling Rate Limits
+
+### 1. Check Headers Before Request
+
+```typescript
+class RateLimitTracker {
+  private remaining = Infinity;
+  private resetTime = 0;
+
+  updateFromHeaders(headers: Headers) {
+    this.remaining = parseInt(headers.get('X-RateLimit-Remaining') || '0');
+    this.resetTime = parseInt(headers.get('X-RateLimit-Reset') || '0');
+  }
+
+  canMakeRequest(): boolean {
+    if (this.remaining > 0) return true;
+    return Date.now() / 1000 > this.resetTime;
+  }
+
+  getWaitTime(): number {
+    if (this.canMakeRequest()) return 0;
+    return Math.max(0, this.resetTime - Date.now() / 1000);
+  }
+}
+
+// Usage
+const tracker = new RateLimitTracker();
+
+async function makeRequest() {
+  if (!tracker.canMakeRequest()) {
+    const waitTime = tracker.getWaitTime();
+    console.log(`Rate limited. Waiting ${waitTime}s...`);
+    await sleep(waitTime * 1000);
+  }
+
+  const response = await fetch('http://localhost:3000/v1/quotes', {
+    method: 'POST',
+    body: JSON.stringify(request)
+  });
+
+  tracker.updateFromHeaders(response.headers);
+  return response.json();
+}
+```
+
+### 2. Implement Exponential Backoff
+
+```typescript
+async function requestWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries = 5
+): Promise<T> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      if (error.error === 'RATE_LIMIT_EXCEEDED') {
+        if (attempt === maxRetries - 1) throw error;
+
+        const backoff = Math.min(
+          1000 * Math.pow(2, attempt),
+          error.retryAfter * 1000
+        );
+
+        console.log(`Rate limited. Backing off ${backoff}ms...`);
+        await sleep(backoff);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error('Max retries exceeded');
+}
+
+// Usage
+const quotes = await requestWithBackoff(() => getQuotes(request));
+```
+
+### 3. Queue Requests
+
+```typescript
+class RequestQueue {
+  private queue: Array<() => Promise<any>> = [];
+  private processing = false;
+  private rateLimitPerMinute: number;
+
+  constructor(rateLimitPerMinute: number) {
+    this.rateLimitPerMinute = rateLimitPerMinute;
+  }
+
+  async enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this.queue.push(async () => {
+        try {
+          const result = await fn();
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        }
+      });
+
+      this.processQueue();
+    });
+  }
+
+  private async processQueue() {
+    if (this.processing || this.queue.length === 0) return;
+
+    this.processing = true;
+
+    while (this.queue.length > 0) {
+      const fn = this.queue.shift()!;
+      await fn();
+
+      // Wait between requests to respect rate limit
+      const delayMs = (60 * 1000) / this.rateLimitPerMinute;
+      await sleep(delayMs);
+    }
+
+    this.processing = false;
+  }
+}
+
+// Usage
+const queue = new RequestQueue(100); // 100 requests per minute
+
+const quotes = await queue.enqueue(() => getQuotes(request));
+```
+
+### 4. Batch Requests
+
+Instead of making multiple individual requests, batch them when possible:
+
+```typescript
+// ❌ Bad: Multiple separate requests
+for (const request of requests) {
+  const quotes = await getQuotes(request);
+  process(quotes);
+}
+
+// ✅ Good: Batch processing
+const batchSize = 5;
+for (let i = 0; i < requests.length; i += batchSize) {
+  const batch = requests.slice(i, i + batchSize);
+  
+  // Process batch concurrently but respect rate limits
+  const results = await Promise.all(
+    batch.map(request => 
+      requestWithBackoff(() => getQuotes(request))
+    )
+  );
+  
+  results.forEach(process);
+  
+  // Wait between batches
+  if (i + batchSize < requests.length) {
+    await sleep(60000 / 100 * batchSize); // Adjust for rate limit
+  }
+}
+```
+
+## Best Practices
+
+### 1. Cache Responses
+
+```typescript
+const cache = new Map<string, { data: any; expires: number }>();
+
+async function getCachedQuotes(request: QuoteRequest) {
+  const key = JSON.stringify(request);
+  const cached = cache.get(key);
+
+  if (cached && cached.expires > Date.now()) {
+    console.log('Returning cached quotes');
+    return cached.data;
+  }
+
+  const quotes = await getQuotes(request);
+
+  cache.set(key, {
+    data: quotes,
+    expires: Date.now() + 30000 // Cache for 30 seconds
+  });
+
+  return quotes;
+}
+```
+
+### 2. Implement Request Deduplication
+
+```typescript
+const pendingRequests = new Map<string, Promise<any>>();
+
+async function deduplicatedRequest<T>(
+  key: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  // Return existing promise if request is already in flight
+  if (pendingRequests.has(key)) {
+    return pendingRequests.get(key)!;
+  }
+
+  const promise = fn().finally(() => {
+    pendingRequests.delete(key);
+  });
+
+  pendingRequests.set(key, promise);
+  return promise;
+}
+
+// Usage
+const quotes = await deduplicatedRequest(
+  JSON.stringify(request),
+  () => getQuotes(request)
+);
+```
+
+### 3. Monitor Rate Limit Usage
+
+```typescript
+class RateLimitMonitor {
+  private requests = 0;
+  private periodStart = Date.now();
+
+  recordRequest() {
+    this.requests++;
+
+    // Reset counter every minute
+    if (Date.now() - this.periodStart > 60000) {
+      console.log(`Made ${this.requests} requests in last minute`);
+      this.requests = 0;
+      this.periodStart = Date.now();
+    }
+  }
+
+  getUsagePercent(limit: number): number {
+    return (this.requests / limit) * 100;
+  }
+}
+```
+
+### 4. Set Up Alerts
+
+```typescript
+const monitor = new RateLimitMonitor();
+
+async function monitoredRequest() {
+  monitor.recordRequest();
+
+  if (monitor.getUsagePercent(100) > 80) {
+    console.warn('Approaching rate limit (>80% usage)');
+    // Send alert to monitoring service
+  }
+
+  return makeRequest();
+}
+```
+
+## Increasing Limits
+
+For production deployments requiring higher limits:
+
+1. **Contact OIF Team**: Request limit increase
+2. **Provide Use Case**: Explain requirements
+3. **API Key**: May require API key authentication
+4. **Custom Configuration**: Deploy own aggregator with custom limits
+
+## Distributed Rate Limiting
+
+For multi-instance deployments:
+
+```rust
+use oif_aggregator::{AggregatorBuilder, RedisRateLimiter};
+
+// Use Redis for distributed rate limiting
+AggregatorBuilder::new()
+    .with_rate_limiter(RedisRateLimiter::new("redis://localhost"))
+    .start_server()
+    .await
+```
+
+## Testing Rate Limits
+
+### Test Script
+
+```bash
+#!/bin/bash
+# Test rate limiting
+
+echo "Sending 120 requests in 60 seconds..."
+
+for i in {1..120}; do
+  response=$(curl -s -w "%{http_code}" -o /dev/null \
+    -X POST http://localhost:3000/v1/quotes \
+    -H "Content-Type: application/json" \
+    -d '{}')
+  
+  echo "Request $i: $response"
+  
+  if [ "$response" == "429" ]; then
+    echo "Rate limit hit at request $i"
+    break
+  fi
+  
+  sleep 0.5
+done
+```
+
+### Load Testing
+
+```bash
+# Using wrk
+wrk -t2 -c10 -d30s --latency \
+  -H "Content-Type: application/json" \
+  -s post.lua \
+  http://localhost:3000/v1/quotes
+```
+
+## Next Steps
+
+- Implement [Error Handling](/docs/apis/errors) for rate limit errors
+- Review [Authentication](/docs/apis/authentication)
+- See [Complete Examples](/docs/apis/examples) for production patterns
+

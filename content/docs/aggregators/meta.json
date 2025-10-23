@@ -1,6 +1,7 @@
 {
   "title": "Aggregators",
   "pages": [
+    "overview",
     "quickstart",
     "configuration",
     "how-it-works",

@@ -1,0 +1,546 @@
+---
+title: Error Codes
+description: Complete reference of API error codes and how to handle them
+---
+
+# Error Codes
+
+This page documents all error codes returned by OIF APIs, their meanings, and recommended actions.
+
+## Error Response Format
+
+All errors follow a consistent structure:
+
+```json
+{
+  "error": "ERROR_CODE",
+  "message": "Human-readable error description",
+  "timestamp": 1703123456
+}
+```
+
+## HTTP Status Codes
+
+| Status | Meaning | When Used |
+|--------|---------|-----------|
+| 400 | Bad Request | Invalid request parameters, validation failures |
+| 404 | Not Found | Resource doesn't exist (order, quote, solver) |
+| 500 | Internal Server Error | Unexpected server errors |
+| 502 | Bad Gateway | Solver communication failures |
+| 503 | Service Unavailable | Service degraded or maintenance |
+
+## Error Codes Reference
+
+### Quotes API Errors
+
+#### VALIDATION_ERROR
+**HTTP Status**: 400  
+**Cause**: Invalid request format or parameters
+
+**Examples**:
+```json
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Invalid request: missing required field 'user'",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Verify all required fields are present
+- Check field formats (addresses, amounts)
+- Ensure arrays are not empty
+
+**Code Example**:
+```typescript
+try {
+  const quotes = await getQuotes(request);
+} catch (error) {
+  if (error.error === 'VALIDATION_ERROR') {
+    console.error('Request validation failed:', error.message);
+    // Fix request and retry
+    request.user = formatAddress(userAddress);
+    return getQuotes(request);
+  }
+}
+```
+
+#### AGGREGATION_ERROR
+**HTTP Status**: 400  
+**Cause**: Failed to fetch quotes from solvers
+
+**Examples**:
+```json
+{
+  "error": "AGGREGATION_ERROR",
+  "message": "Failed to fetch quotes: all solvers timed out",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Check solver health via `/health` endpoint
+- Retry request after delay
+- Consider increasing timeouts in configuration
+
+**Code Example**:
+```typescript
+async function getQuotesWithRetry(request, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await getQuotes(request);
+    } catch (error) {
+      if (error.error === 'AGGREGATION_ERROR' && i < maxRetries - 1) {
+        console.log(`Attempt ${i + 1} failed, retrying...`);
+        await sleep(2000 * (i + 1)); // Exponential backoff
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+```
+
+#### CONVERSION_ERROR
+**HTTP Status**: 500  
+**Cause**: Internal error converting data formats
+
+**Examples**:
+```json
+{
+  "error": "CONVERSION_ERROR",
+  "message": "Failed to convert quotes: invalid amount format",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- This indicates a server-side issue
+- Report to OIF team if persists
+- Try different request parameters
+
+### Orders API Errors
+
+#### QUOTE_NOT_FOUND
+**HTTP Status**: 404  
+**Cause**: Referenced quote doesn't exist
+
+**Examples**:
+```json
+{
+  "error": "QUOTE_NOT_FOUND",
+  "message": "Quote quote_abc123 not found",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Verify quote ID is correct
+- Request new quotes (quotes may have been cleaned up)
+- Don't delay too long between quote and order submission
+
+**Code Example**:
+```typescript
+try {
+  const order = await submitOrder(quoteId, signature, userAddress);
+} catch (error) {
+  if (error.error === 'QUOTE_NOT_FOUND') {
+    console.log('Quote not found, requesting new quotes...');
+    const newQuotes = await getQuotes(originalRequest);
+    return submitOrder(newQuotes[0].quoteId, signature, userAddress);
+  }
+}
+```
+
+#### QUOTE_EXPIRED
+**HTTP Status**: 400  
+**Cause**: Quote has passed expiration time
+
+**Examples**:
+```json
+{
+  "error": "QUOTE_EXPIRED",
+  "message": "Quote quote_abc123 has expired",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Check `expiresAt` before submitting
+- Request fresh quotes
+- Submit orders promptly after receiving quotes
+
+**Code Example**:
+```typescript
+function isQuoteValid(quote) {
+  const now = Math.floor(Date.now() / 1000);
+  return quote.expiresAt > now + 10; // 10 second buffer
+}
+
+async function submitOrderSafely(quote, signature, userAddress) {
+  if (!isQuoteValid(quote)) {
+    throw new Error('Quote expired, request new quotes');
+  }
+  
+  return submitOrder(quote.quoteId, signature, userAddress);
+}
+```
+
+#### ORDER_NOT_FOUND
+**HTTP Status**: 404  
+**Cause**: Order ID doesn't exist
+
+**Examples**:
+```json
+{
+  "error": "ORDER_NOT_FOUND",
+  "message": "Order order_xyz789 not found",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Verify order ID is correct
+- Check if order was successfully created
+- Order may have been cleaned up (completed/expired)
+
+#### STORAGE_ERROR
+**HTTP Status**: 500  
+**Cause**: Database/storage operation failed
+
+**Examples**:
+```json
+{
+  "error": "STORAGE_ERROR",
+  "message": "Failed to save order: connection timeout",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Retry after short delay
+- Check service health
+- Contact support if persists
+
+**Code Example**:
+```typescript
+async function submitOrderWithRetry(quoteId, signature, userAddress) {
+  const maxRetries = 3;
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await submitOrder(quoteId, signature, userAddress);
+    } catch (error) {
+      if (error.error === 'STORAGE_ERROR' && i < maxRetries - 1) {
+        await sleep(1000);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+```
+
+#### SOLVER_ADAPTER_ERROR
+**HTTP Status**: 502  
+**Cause**: Communication with solver failed
+
+**Examples**:
+```json
+{
+  "error": "SOLVER_ADAPTER_ERROR",
+  "message": "Solver connection timeout",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Check solver health
+- Retry with different solver
+- Wait for solver recovery
+
+### Solvers API Errors
+
+#### SOLVER_NOT_FOUND
+**HTTP Status**: 404  
+**Cause**: Solver ID doesn't exist
+
+**Examples**:
+```json
+{
+  "error": "SOLVER_NOT_FOUND",
+  "message": "Solver solver-xyz not found",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- List all solvers with `GET /v1/solvers`
+- Verify solver ID spelling
+- Solver may have been removed from configuration
+
+### General Errors
+
+#### INTERNAL_ERROR
+**HTTP Status**: 500  
+**Cause**: Unexpected server error
+
+**Examples**:
+```json
+{
+  "error": "INTERNAL_ERROR",
+  "message": "An unexpected error occurred",
+  "timestamp": 1703123456
+}
+```
+
+**How to Fix**:
+- Retry request
+- Check service logs
+- Report to OIF team
+
+## Error Handling Best Practices
+
+### 1. Implement Retry Logic
+
+```typescript
+async function apiCallWithRetry<T>(
+  apiCall: () => Promise<T>,
+  options: {
+    maxRetries?: number;
+    retryableErrors?: string[];
+    backoff?: 'linear' | 'exponential';
+  } = {}
+): Promise<T> {
+  const {
+    maxRetries = 3,
+    retryableErrors = ['AGGREGATION_ERROR', 'STORAGE_ERROR', 'SOLVER_ADAPTER_ERROR'],
+    backoff = 'exponential'
+  } = options;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (error: any) {
+      const isLastAttempt = attempt === maxRetries - 1;
+      const isRetryable = retryableErrors.includes(error.error);
+
+      if (isLastAttempt || !isRetryable) {
+        throw error;
+      }
+
+      const delay = backoff === 'exponential' 
+        ? 1000 * Math.pow(2, attempt)
+        : 1000 * (attempt + 1);
+
+      console.log(`Attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+      await sleep(delay);
+    }
+  }
+
+  throw new Error('Max retries exceeded');
+}
+
+// Usage
+const quotes = await apiCallWithRetry(() => getQuotes(request));
+```
+
+### 2. Handle Specific Errors
+
+```typescript
+async function getQuotesAndSubmit(request) {
+  try {
+    // Get quotes
+    const quotes = await getQuotes(request);
+    const bestQuote = selectBestQuote(quotes);
+
+    // Verify quote is still valid
+    if (!isQuoteValid(bestQuote)) {
+      throw new Error('Quote expired');
+    }
+
+    // Sign and submit
+    const signature = await signQuote(bestQuote);
+    const order = await submitOrder(
+      bestQuote.quoteId,
+      signature,
+      request.user
+    );
+
+    return order;
+
+  } catch (error: any) {
+    switch (error.error) {
+      case 'VALIDATION_ERROR':
+        // Fix request format
+        console.error('Invalid request:', error.message);
+        throw error;
+
+      case 'QUOTE_EXPIRED':
+      case 'QUOTE_NOT_FOUND':
+        // Request fresh quotes
+        console.log('Quote issue, requesting new quotes...');
+        return getQuotesAndSubmit(request);
+
+      case 'AGGREGATION_ERROR':
+        // Wait and retry
+        console.log('Aggregation failed, retrying...');
+        await sleep(2000);
+        return getQuotesAndSubmit(request);
+
+      case 'STORAGE_ERROR':
+      case 'SOLVER_ADAPTER_ERROR':
+        // Retry with backoff
+        await sleep(5000);
+        return getQuotesAndSubmit(request);
+
+      default:
+        // Unexpected error
+        console.error('Unexpected error:', error);
+        throw error;
+    }
+  }
+}
+```
+
+### 3. User-Friendly Error Messages
+
+```typescript
+function getUserFriendlyMessage(error: any): string {
+  const errorMessages: Record<string, string> = {
+    'VALIDATION_ERROR': 'Invalid request. Please check your input and try again.',
+    'QUOTE_EXPIRED': 'This quote has expired. Please request a new quote.',
+    'QUOTE_NOT_FOUND': 'Quote not found. Please request a new quote.',
+    'ORDER_NOT_FOUND': 'Order not found. Please check the order ID.',
+    'AGGREGATION_ERROR': 'Unable to get quotes at this time. Please try again.',
+    'STORAGE_ERROR': 'Service temporarily unavailable. Please try again.',
+    'SOLVER_ADAPTER_ERROR': 'Solver communication error. Please try again.',
+    'INTERNAL_ERROR': 'An unexpected error occurred. Please try again later.'
+  };
+
+  return errorMessages[error.error] || 
+    'An error occurred. Please try again or contact support.';
+}
+
+// Usage in UI
+try {
+  const order = await submitOrder(quoteId, signature, userAddress);
+  showSuccess('Order submitted successfully!');
+} catch (error: any) {
+  const message = getUserFriendlyMessage(error);
+  showError(message);
+}
+```
+
+### 4. Logging and Monitoring
+
+```typescript
+function logError(error: any, context: string) {
+  console.error(`[${context}] Error:`, {
+    code: error.error,
+    message: error.message,
+    timestamp: error.timestamp,
+    context
+  });
+
+  // Send to monitoring service
+  if (error.error !== 'QUOTE_EXPIRED') {
+    sendToMonitoring({
+      type: 'api_error',
+      code: error.error,
+      message: error.message,
+      context
+    });
+  }
+}
+```
+
+### 5. Circuit Breaker Pattern
+
+```typescript
+class CircuitBreaker {
+  private failures = 0;
+  private lastFailTime = 0;
+  private state: 'closed' | 'open' | 'half-open' = 'closed';
+
+  constructor(
+    private threshold = 5,
+    private timeout = 60000
+  ) {}
+
+  async execute<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.state === 'open') {
+      if (Date.now() - this.lastFailTime > this.timeout) {
+        this.state = 'half-open';
+      } else {
+        throw new Error('Circuit breaker is open');
+      }
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  private onSuccess() {
+    this.failures = 0;
+    this.state = 'closed';
+  }
+
+  private onFailure() {
+    this.failures++;
+    this.lastFailTime = Date.now();
+
+    if (this.failures >= this.threshold) {
+      this.state = 'open';
+    }
+  }
+}
+
+// Usage
+const breaker = new CircuitBreaker();
+const quotes = await breaker.execute(() => getQuotes(request));
+```
+
+## Debugging Tips
+
+### 1. Enable Verbose Logging
+
+```bash
+# Set log level
+export RUST_LOG=debug
+cargo run
+```
+
+### 2. Check Service Health
+
+```bash
+curl http://localhost:3000/health | jq
+```
+
+### 3. Inspect Full Error Response
+
+```bash
+curl -v -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{...}' 2>&1 | tee error.log
+```
+
+### 4. Monitor Solver Status
+
+```bash
+curl http://localhost:3000/v1/solvers | \
+  jq '.solvers[] | {id: .solverId, healthy: .healthy}'
+```
+
+## Next Steps
+
+- See [Examples](/docs/apis/examples) for complete error handling patterns
+- Learn about [Rate Limits](/docs/apis/rate-limits)
+- Review [Quotes API](/docs/apis/quote-api) and [Orders API](/docs/apis/order-api)
+

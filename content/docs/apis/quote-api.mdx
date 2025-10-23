@@ -1,0 +1,377 @@
+---
+title: Quotes API
+description: Request quotes from multiple solvers for cross-chain intents
+---
+
+# Quotes API
+
+The Quotes API allows you to request quotes from multiple solvers simultaneously, receiving aggregated pricing for cross-chain asset swaps.
+
+## Endpoint
+
+```
+POST /v1/quotes
+```
+
+## Request Format
+
+### Headers
+
+```
+Content-Type: application/json
+```
+
+### Request Body
+
+```typescript
+{
+  user: Address;                    // User's cross-chain address (EIP-7930)
+  intent: {
+    intentType: "oif-swap";         // Intent type identifier
+    inputs: Input[];                 // Assets user provides
+    outputs: Output[];               // Assets user wants to receive
+  };
+  swapType?: "exact-input" | "exact-output";  // Default: "exact-input"
+  quotePreference?: QuotePreference;           // Optional sorting preference
+  failureHandling?: FailureHandlingMode;       // Optional failure mode
+  originSubmission?: OriginSubmission;         // Optional submission preference
+}
+```
+
+### Input Object
+
+```typescript
+{
+  user: Address;           // Provider of input assets
+  asset: Address;          // Token address (EIP-7930 format)
+  amount?: Amount;         // Amount in smallest unit (string)
+  lock?: {                 // Optional lock mechanism
+    kind: "the-compact" | "rhinestone";
+    params?: Record<string, unknown>;
+  };
+}
+```
+
+### Output Object
+
+```typescript
+{
+  receiver: Address;       // Recipient of output assets
+  asset: Address;          // Token address (EIP-7930 format)
+  amount?: Amount;         // Amount in smallest unit (string)
+  calldata?: string;       // Optional contract call
+}
+```
+
+## Response Format
+
+### Success Response (200 OK)
+
+```json
+{
+  "quotes": [
+    {
+      "quoteId": "quote_abc123xyz",
+      "solverId": "solver-1",
+      "inputs": [...],
+      "outputs": [...],
+      "expiresAt": 1703123456,
+      "estimatedFillTime": 30,
+      "integrity": {
+        "checksum": "0xabc...",
+        "algorithm": "hmac-sha256"
+      }
+    }
+  ],
+  "totalQuotes": 3,
+  "aggregationMetadata": {
+    "totalDurationMs": 1250,
+    "solverTimeoutMs": 2000,
+    "globalTimeoutMs": 4000,
+    "earlyTermination": false,
+    "totalSolversAvailable": 5,
+    "solversQueried": 5,
+    "solversRespondedSuccess": 3,
+    "solversRespondedError": 1,
+    "solversTimedOut": 1,
+    "minQuotesRequired": 1,
+    "solverSelectionMode": "all-enabled"
+  }
+}
+```
+
+### Error Response
+
+```json
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Invalid request: missing required field 'user'",
+  "timestamp": 1703123456
+}
+```
+
+## Examples
+
+### Example 1: Exact Input Swap
+
+User has exactly 1000 USDC and wants to know how much ETH they'll receive:
+
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+    "intent": {
+      "intentType": "oif-swap",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "amount": "1000000000",
+        "lock": {
+          "kind": "the-compact"
+        }
+      }],
+      "outputs": [{
+        "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      }]
+    },
+    "swapType": "exact-input"
+  }'
+```
+
+Response:
+```json
+{
+  "quotes": [
+    {
+      "quoteId": "quote_abc123",
+      "solverId": "solver-best-price",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "amount": "1000000000"
+      }],
+      "outputs": [{
+        "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "amount": "400000000000000000"
+      }],
+      "expiresAt": 1703123756,
+      "estimatedFillTime": 30
+    }
+  ],
+  "totalQuotes": 1
+}
+```
+
+### Example 2: Exact Output Swap
+
+User wants exactly 1 ETH and wants to know how much USDC they need:
+
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+    "intent": {
+      "intentType": "oif-swap",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "lock": {
+          "kind": "the-compact"
+        }
+      }],
+      "outputs": [{
+        "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "amount": "1000000000000000000"
+      }]
+    },
+    "swapType": "exact-output"
+  }'
+```
+
+### Example 3: Cross-Chain Swap (Ethereum → Arbitrum)
+
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+    "intent": {
+      "intentType": "oif-swap",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "amount": "1000000000"
+      }],
+      "outputs": [{
+        "receiver": "0x00010000A4B114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x00010000A4B1C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      }]
+    },
+    "swapType": "exact-input"
+  }'
+```
+
+## Field Descriptions
+
+### Quote Preference
+
+Guides solver selection when multiple quotes are available:
+
+- `"price"`: Optimize for best exchange rate
+- `"speed"`: Optimize for fastest execution
+- `"input-priority"`: Prefer quotes using inputs in specified order
+- `"trust-minimization"`: Prefer quotes with strongest security
+
+### Failure Handling Mode
+
+Defines behavior on execution failure:
+
+- `"refund-automatic"`: Auto-refund without user action
+- `"refund-claim"`: User must manually claim refund
+- `"needs-new-signature"`: Requires new signature to retry
+
+### Origin Submission
+
+Specifies transaction submission preference:
+
+```json
+{
+  "mode": "user" | "protocol",
+  "schemes": ["erc-4337", "permit2", "erc20-permit", "eip-3009"]
+}
+```
+
+- **mode**: Who submits transaction
+  - `"user"`: User submits and pays gas
+  - `"protocol"`: Protocol submits (gasless for user)
+
+- **schemes**: Acceptable authorization methods
+
+## Quote Response Fields
+
+### Quote Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `quoteId` | string | Unique quote identifier for submission |
+| `solverId` | string | Solver that provided the quote |
+| `inputs` | Input[] | Required input assets with amounts |
+| `outputs` | Output[] | Promised output assets with amounts |
+| `expiresAt` | number | Unix timestamp when quote expires |
+| `estimatedFillTime` | number | Estimated seconds to fill |
+| `integrity` | object | HMAC checksum for tamper detection |
+
+### Aggregation Metadata
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `totalDurationMs` | number | Total aggregation time |
+| `solverTimeoutMs` | number | Per-solver timeout |
+| `globalTimeoutMs` | number | Global timeout |
+| `solversQueried` | number | Number of solvers contacted |
+| `solversRespondedSuccess` | number | Successful responses |
+| `solversRespondedError` | number | Error responses |
+| `solversTimedOut` | number | Timed out solvers |
+
+## Error Codes
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `VALIDATION_ERROR` | 400 | Invalid request format |
+| `AGGREGATION_ERROR` | 400 | Failed to fetch quotes |
+| `CONVERSION_ERROR` | 500 | Internal conversion error |
+| `INTERNAL_ERROR` | 500 | Unexpected server error |
+
+## Best Practices
+
+### 1. Always Validate Responses
+
+Check quote expiration before submission:
+
+```typescript
+const quote = quotes[0];
+const now = Math.floor(Date.now() / 1000);
+
+if (quote.expiresAt < now) {
+  // Quote expired, request new quotes
+}
+```
+
+### 2. Handle Multiple Quotes
+
+Compare quotes to find best option:
+
+```typescript
+const bestQuote = quotes.reduce((best, quote) => {
+  const bestOutput = BigInt(best.outputs[0].amount);
+  const quoteOutput = BigInt(quote.outputs[0].amount);
+  return quoteOutput > bestOutput ? quote : best;
+});
+```
+
+### 3. Verify Integrity Checksums
+
+Always verify integrity checksums to detect tampering:
+
+```typescript
+import crypto from 'crypto';
+
+function verifyIntegrity(quote, secret) {
+  const payload = JSON.stringify({
+    quoteId: quote.quoteId,
+    inputs: quote.inputs,
+    outputs: quote.outputs
+  });
+  
+  const checksum = crypto
+    .createHmac('sha256', secret)
+    .update(payload)
+    .digest('hex');
+    
+  return checksum === quote.integrity.checksum;
+}
+```
+
+### 4. Handle Partial Responses
+
+Some solvers may fail or timeout:
+
+```typescript
+if (response.aggregationMetadata.solversRespondedSuccess < 2) {
+  console.warn('Low number of quotes, consider retrying');
+}
+```
+
+### 5. Set Appropriate Preferences
+
+Specify preferences for better results:
+
+```json
+{
+  "quotePreference": "price",
+  "failureHandling": "refund-automatic",
+  "originSubmission": {
+    "mode": "protocol",
+    "schemes": ["permit2"]
+  }
+}
+```
+
+## Rate Limits
+
+- **Default**: 100 requests/minute per IP
+- **Burst**: 10 requests/second
+
+See [Rate Limits](/docs/apis/rate-limits) for details.
+
+## Next Steps
+
+- Learn about [Order API](/docs/apis/order-api) to submit quotes
+- See [Complete Examples](/docs/apis/examples)
+- Understand [Error Handling](/docs/apis/errors)
+

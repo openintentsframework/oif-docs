@@ -3,11 +3,220 @@ title: Integration Overview
 description: Complete guide to integrating with the Open Intents Framework
 ---
 
-# Integration Overview
+# Integration Overview & Quickstart
 
-The Open Intents Framework provides multiple integration paths depending on your use case. This guide helps you choose the right approach and get started quickly.
+Get started with OIF integration in under 5 minutes, then dive deeper into integration patterns and best practices.
 
-## Integration Options
+
+## 🏗️ Integration Flow
+
+This is an example integration flow using the OIF Aggregator, but it can be skipped and interact directly with a preferred solver.
+
+```mermaid
+sequenceDiagram
+    participant App as Your Application
+    participant API as OIF Aggregator
+    participant Solver as Solvers
+    participant Chain as Blockchain
+
+    App->>API: 1. Request quotes
+    API->>Solver: Query multiple solvers
+    Solver->>API: Return quotes
+    API->>App: Aggregated quotes
+    
+    App->>App: 2. User selects & signs
+    App->>Solver: 3. Submit signed order
+    
+    Solver->>Chain: 4. Fill outputs
+    Solver->>Chain: 5. Claim inputs
+    
+    Chain->>API: Status updates
+    API->>App: 6. Order completed
+```
+
+---
+## 🚀 Quickstart: Your First Swap
+
+### Prerequisites
+
+- **Node.js 18+** or **Python 3.8+**
+- **Local aggregator running** OR access to a deployed instance
+- **Basic blockchain knowledge** (addresses, signing)
+
+<Callout type="info">
+This quickstart uses simplified examples. For production code, see [Complete Examples](/docs/apis/examples).
+</Callout>
+
+### Step 1: Start Local Aggregator (Optional)
+
+If you don't have access to a deployed aggregator, run one locally:
+
+```bash
+# Clone and run aggregator
+git clone https://github.com/openintentsframework/oif-aggregator.git
+cd oif-aggregator
+export INTEGRITY_SECRET="quickstart-secret-min-32-characters"
+cargo run
+```
+
+Wait for the server to start on `http://localhost:3000`.
+
+Verify it's running:
+```bash
+curl http://localhost:3000/health
+```
+
+### Step 2: Request Quotes
+
+#### Using cURL
+
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+    "intent": {
+      "intentType": "oif-swap",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "amount": "1000000000",
+        "lock": {"kind": "the-compact"}
+      }],
+      "outputs": [{
+        "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      }]
+    },
+    "swapType": "exact-input"
+  }'
+```
+
+#### Using JavaScript/TypeScript
+
+```javascript
+const BASE_URL = 'http://localhost:3000';
+
+async function getQuotes() {
+  const response = await fetch(`${BASE_URL}/v1/quotes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+      intent: {
+        intentType: 'oif-swap',
+        inputs: [{
+          user: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+          asset: '0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+          amount: '1000000000',
+          lock: { kind: 'the-compact' }
+        }],
+        outputs: [{
+          receiver: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+          asset: '0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+        }]
+      },
+      swapType: 'exact-input'
+    })
+  });
+
+  return await response.json();
+}
+```
+
+#### Using Python
+
+```python
+import requests
+
+def get_quotes():
+    response = requests.post(
+        'http://localhost:3000/v1/quotes',
+        json={
+            'user': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+            'intent': {
+                'intentType': 'oif-swap',
+                'inputs': [{
+                    'user': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+                    'asset': '0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+                    'amount': '1000000000',
+                    'lock': {'kind': 'the-compact'}
+                }],
+                'outputs': [{
+                    'receiver': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+                    'asset': '0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+                }]
+            },
+            'swapType': 'exact-input'
+        }
+    )
+    return response.json()
+```
+
+### Step 3: Understanding the Response
+
+You should see a response like:
+
+```json
+{
+  "quotes": [{
+    "quoteId": "quote_abc123xyz",
+    "solverId": "solver-1",
+    "outputs": [{
+      "amount": "400000000000000000"
+    }],
+    "expiresAt": 1703123756,
+    "estimatedFillTime": 30
+  }],
+  "totalQuotes": 1
+}
+```
+
+**Key fields**:
+- `quoteId`: Use this to submit the order
+- `outputs[0].amount`: How much you'll receive (0.4 ETH in this example)
+- `expiresAt`: Quote expiration timestamp
+- `estimatedFillTime`: Expected execution time in seconds
+
+### Step 4: Submit Order (Production Flow)
+
+<Callout type="warn">
+**Note**: Order submission requires signing with a real private key. See [Complete Examples](/docs/apis/examples) for production signing code.
+</Callout>
+
+The full flow:
+
+```javascript
+// 1. Get quotes
+const quotes = await getQuotes();
+const bestQuote = quotes.quotes[0];
+
+// 2. Sign the quote (requires wallet)
+// const signature = await wallet.signMessage(bestQuote.quoteId);
+
+// 3. Submit order
+const order = await fetch(`${BASE_URL}/v1/orders`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    quoteId: bestQuote.quoteId,
+    signature: '0x...', // Your signature
+    userAddress: '0x...'
+  })
+});
+
+// 4. Poll for status
+const checkStatus = async (orderId) => {
+  const status = await fetch(`${BASE_URL}/v1/orders/${orderId}`);
+  return await status.json();
+};
+```
+
+---
+
+## 📋 Integration Options
+
+Choose the integration path that fits your use case:
 
 ### 1. API Integration (Most Common)
 
@@ -57,123 +266,10 @@ Run your own aggregator instance for complete control.
 
 **Get Started**: [Aggregator Documentation](/docs/aggregators)
 
-## Integration Flow
+---
 
-```mermaid
-sequenceDiagram
-    participant App as Your Application
-    participant API as OIF Aggregator
-    participant Solver as Solvers
-    participant Chain as Blockchain
 
-    App->>API: 1. Request quotes
-    API->>Solver: Query multiple solvers
-    Solver->>API: Return quotes
-    API->>App: Aggregated quotes
-    
-    App->>App: 2. User selects & signs
-    App->>API: 3. Submit signed order
-    
-    API->>Solver: Route to best solver
-    Solver->>Chain: 4. Fill outputs
-    Solver->>Chain: 5. Claim inputs
-    
-    Chain->>API: Status updates
-    API->>App: 6. Order completed
-```
-
-## Quick Start Guide
-
-### Step 1: Choose Your Path
-
-**For Wallets/DApps**: Start with [API Integration](/docs/integration/quickstart)  
-**For Solvers**: Start with [Solver Quickstart](/docs/solvers/quickstart)  
-**For Protocols**: Start with [Aggregator Setup](/docs/aggregators/quickstart)
-
-### Step 2: Understand Core Concepts
-
-Before integrating, familiarize yourself with:
-
-- **EIP-7930 Addresses**: Cross-chain address format
-- **Swap Types**: exact-input vs exact-output
-- **Lock Mechanisms**: The Compact, escrow, etc.
-- **Quote Lifecycle**: Request → Sign → Submit → Execute
-
-See [API Overview](/docs/apis) for detailed explanations.
-
-### Step 3: Get Your Environment Ready
-
-#### Local Development
-
-```bash
-# Run local aggregator
-cd oif-aggregator
-export INTEGRITY_SECRET="dev-secret-min-32-chars"
-cargo run
-
-# In another terminal, test it
-curl http://localhost:3000/health
-```
-
-#### Testnet Integration
-
-1. Deploy or use existing testnet contracts
-2. Configure solver for testnets (Sepolia, Arbitrum Sepolia, etc.)
-3. Fund accounts with testnet tokens
-4. Test complete flows end-to-end
-
-### Step 4: Implement Integration
-
-Follow language-specific guides:
-- [TypeScript/JavaScript](/docs/integration/examples#typescript)
-- [Python](/docs/integration/examples#python)
-- [Rust](/docs/integration/examples#rust)
-
-### Step 5: Test Thoroughly
-
-Use the [testing guide](/docs/integration/testing) to verify:
-- Quote requests work correctly
-- Order submission succeeds
-- Status polling functions properly
-- Error handling is robust
-
-### Step 6: Go to Production
-
-Follow the [production checklist](/docs/integration/production) before launching.
-
-## Architecture Patterns
-
-### Pattern 1: Direct API Integration
-
-```typescript
-// Your app talks directly to aggregator
-App → OIF Aggregator API → Solvers
-```
-
-**Pros**: Simplest integration, no infrastructure  
-**Cons**: Dependent on aggregator availability
-
-### Pattern 2: SDK Integration (Coming Soon)
-
-```typescript
-import { OIFClient } from '@oif/sdk';
-const client = new OIFClient({ baseUrl: '...' });
-```
-
-**Pros**: Type-safe, handles errors, retries  
-**Cons**: Limited to SDK-supported languages
-
-### Pattern 3: Custom Aggregator
-
-```typescript
-// Run your own aggregator instance
-Your App → Your Aggregator → Your Solver Set
-```
-
-**Pros**: Full control, custom logic  
-**Cons**: Infrastructure overhead
-
-## Key Concepts
+## 🔑 Key Concepts
 
 ### EIP-7930 Cross-Chain Addresses
 
@@ -192,25 +288,44 @@ OIF uses a special address format that embeds chain information:
   └─ Version: 1
 ```
 
-This format eliminates ambiguity in cross-chain operations.
+**Converting regular address to EIP-7930**:
+
+```javascript
+function toEIP7930(address, chainId) {
+  const addr = address.slice(2);
+  const chain = chainId.toString(16).padStart(8, '0');
+  return `0x0001${chain}${addr}`;
+}
+
+// Example
+const eip7930 = toEIP7930('0x14D8DA6BF2696...', 1);
+```
+
+**Common chain IDs**:
+- Ethereum: `1` → `0x00010000010`
+- Arbitrum: `42161` → `0x00010000A4B1`
+- Optimism: `10` → `0x0001000000A`
+- Base: `8453` → `0x000100000021`
 
 ### Swap Types
 
 **Exact Input**: User specifies exact input amount, quotes output amount
+
 ```json
 {
   "swapType": "exact-input",
-  "inputs": [{ "amount": "1000000000" }],  // Fixed
-  "outputs": [{ }]  // To be quoted
+  "inputs": [{ "amount": "1000000000" }],
+  "outputs": [{ }]
 }
 ```
 
 **Exact Output**: User specifies exact output amount, quotes input needed
+
 ```json
 {
   "swapType": "exact-output",
-  "inputs": [{ }],  // To be quoted
-  "outputs": [{ "amount": "1000000000000000000" }]  // Fixed
+  "inputs": [{ }],
+  "outputs": [{ "amount": "1000000000000000000" }]
 }
 ```
 
@@ -231,7 +346,9 @@ Assets are locked during cross-chain transfer using:
 }
 ```
 
-## Security Considerations
+---
+
+## 🛡️ Security Considerations
 
 ### 1. Quote Integrity
 
@@ -250,8 +367,7 @@ Check expiration before submission:
 
 ```typescript
 const now = Math.floor(Date.now() / 1000);
-if (quote.expiresAt < now + 10) { // 10s buffer
-  // Quote expired or expiring soon
+if (quote.expiresAt < now + 10) {
   requestNewQuotes();
 }
 ```
@@ -269,12 +385,45 @@ Always validate amounts are as expected:
 ```typescript
 const expectedOutput = calculateExpectedOutput(input);
 if (quote.outputs[0].amount < expectedOutput * 0.99) {
-  // Output less than 99% of expected
   throw new Error('Unexpected slippage');
 }
 ```
 
-## Common Integration Patterns
+---
+
+## 📐 Architecture Patterns
+
+### Pattern 1: Direct API Integration
+
+```
+App → OIF Aggregator API → Solvers
+```
+
+**Pros**: Simplest integration, no infrastructure  
+**Cons**: Dependent on aggregator availability
+
+### Pattern 2: SDK Integration (Coming Soon)
+
+```typescript
+import { OIFClient } from '@oif/sdk';
+const client = new OIFClient({ baseUrl: '...' });
+```
+
+**Pros**: Type-safe, handles errors, retries  
+**Cons**: Limited to SDK-supported languages
+
+### Pattern 3: Custom Aggregator
+
+```
+Your App → Your Aggregator → Your Solver Set
+```
+
+**Pros**: Full control, custom logic  
+**Cons**: Infrastructure overhead
+
+---
+
+## 💻 Common Integration Patterns
 
 ### Pattern: Quote Comparison UI
 
@@ -282,20 +431,17 @@ if (quote.outputs[0].amount < expectedOutput * 0.99) {
 async function displayQuotes(request) {
   const response = await getQuotes(request);
   
-  // Sort by best output amount
   const sorted = response.quotes.sort((a, b) => {
     const aOutput = BigInt(a.outputs[0].amount);
     const bOutput = BigInt(b.outputs[0].amount);
     return bOutput > aOutput ? 1 : -1;
   });
   
-  // Display to user
   sorted.forEach(quote => {
     displayQuoteCard({
       solver: quote.solverId,
       output: formatAmount(quote.outputs[0].amount),
-      estimatedTime: quote.estimatedFillTime,
-      selected: false
+      estimatedTime: quote.estimatedFillTime
     });
   });
 }
@@ -305,25 +451,12 @@ async function displayQuotes(request) {
 
 ```typescript
 class QuoteManager {
-  private quotes = [];
-  private refreshInterval = 30000; // 30 seconds
-
   async startAutoRefresh(request) {
     await this.refreshQuotes(request);
     
     setInterval(async () => {
       await this.refreshQuotes(request);
-    }, this.refreshInterval);
-  }
-
-  private async refreshQuotes(request) {
-    try {
-      const response = await getQuotes(request);
-      this.quotes = response.quotes;
-      this.onQuotesUpdated(this.quotes);
-    } catch (error) {
-      console.error('Failed to refresh quotes:', error);
-    }
+    }, 30000); // 30 seconds
   }
 }
 ```
@@ -336,7 +469,6 @@ async function trackOrder(orderId, onUpdate) {
     pending: 'Order submitted, waiting for solver...',
     filling: 'Solver is delivering your assets...',
     filled: 'Assets delivered, claiming inputs...',
-    claiming: 'Finalizing transaction...',
     completed: 'Swap completed successfully!'
   };
 
@@ -353,46 +485,99 @@ async function trackOrder(orderId, onUpdate) {
 }
 ```
 
-## Error Handling Strategy
+---
 
-```typescript
-async function robustSwap(request, maxRetries = 3) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      // Get fresh quotes
-      const quotes = await getQuotes(request);
-      
-      // Select and submit
-      const order = await submitBestQuote(quotes[0]);
-      
-      // Wait for completion
-      return await waitForCompletion(order.orderId);
-      
-    } catch (error) {
-      console.error(`Attempt ${attempt + 1} failed:`, error);
-      
-      if (attempt === maxRetries - 1) throw error;
-      
-      // Exponential backoff
-      await sleep(1000 * Math.pow(2, attempt));
-    }
-  }
-}
+## 🐛 Troubleshooting
+
+### Error: "No quotes available"
+
+**Cause**: No solvers configured or all solvers failed
+
+**Solution**:
+```bash
+curl http://localhost:3000/v1/solvers | jq
+curl http://localhost:3000/health | jq
 ```
 
-## Next Steps
+### Error: "Connection refused"
+
+**Cause**: Aggregator not running
+
+**Solution**:
+```bash
+cd oif-aggregator
+export INTEGRITY_SECRET="your-secret-min-32-chars"
+cargo run
+```
+
+### Error: "VALIDATION_ERROR"
+
+**Cause**: Invalid request format
+
+**Solution**:
+- Verify addresses are in EIP-7930 format
+- Ensure amounts are strings, not numbers
+- Check all required fields are present
+
+---
+
+## ✅ Production Checklist
+
+Before going to production:
+
+- [ ] Implement proper error handling
+- [ ] Add retry logic with exponential backoff
+- [ ] Verify quote integrity checksums
+- [ ] Check quote expiration before submission
+- [ ] Implement proper signature generation
+- [ ] Test on testnets thoroughly
+- [ ] Set up monitoring and alerting
+- [ ] Review security best practices
+- [ ] Load test your integration
+- [ ] Validate all user inputs
+
+---
+
+## 🔗 Quick Reference
+
+### API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Check aggregator health |
+| `/v1/quotes` | POST | Request quotes from solvers |
+| `/v1/orders` | POST | Submit signed order |
+| `/v1/orders/:id` | GET | Check order status |
+| `/v1/solvers` | GET | List available solvers |
+
+See [API Reference](/docs/apis) for detailed documentation.
+
+---
+
+## 📚 Next Steps
+
+### Complete Examples
 
 <Cards>
-  <Card title="Quickstart" href="/docs/integration/quickstart" description="Get started with your first integration" />
   <Card title="API Reference" href="/docs/apis" description="Complete API documentation" />
-  <Card title="Examples" href="/docs/apis/examples" description="Code examples in multiple languages" />
-  <Card title="Testing" href="/docs/integration/testing" description="Test your integration thoroughly" />
+  <Card title="Code Examples" href="/docs/apis/examples" description="Production-ready code in TypeScript, Python, Rust" />
+  <Card title="Error Handling" href="/docs/apis/errors" description="Handle errors properly" />
+  <Card title="Authentication" href="/docs/apis/authentication" description="API keys and HMAC verification" />
 </Cards>
 
-## Support
+### Deploy Your Own
 
-- **Documentation**: Browse this integration guide
+<Cards>
+  <Card title="Run a Solver" href="/docs/solvers" description="Earn fees by fulfilling intents" />
+  <Card title="Deploy Aggregator" href="/docs/aggregators" description="Run your own aggregator instance" />
+  <Card title="Smart Contracts" href="/docs/smart-contracts" description="Understand the on-chain layer" />
+</Cards>
+
+---
+
+## 🤝 Support
+
+- **Documentation**: You're reading it!
 - **API Playground**: Test at `/swagger-ui` when running with OpenAPI
-- **Examples**: See complete code in [Examples](/docs/apis/examples)
+- **Examples**: See [Complete Examples](/docs/apis/examples)
 - **Issues**: [GitHub Issues](https://github.com/openintentsframework/oif-aggregator/issues)
-

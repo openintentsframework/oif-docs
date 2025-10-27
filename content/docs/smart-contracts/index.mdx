@@ -3,18 +3,33 @@ title: Smart Contracts
 description: On-chain contracts for the Open Intents Framework
 ---
 
-Welcome to the Smart Contracts docs. This section covers the on-chain components used by OIF.
+# Smart Contracts
 
-## Sections
+The OIF smart contracts provide the on-chain settlement infrastructure for permissionless cross-chain intent execution.
+
+<Callout type="warn">
+**Security Warning**: This project currently uses an unaudited version of OpenZeppelin Contracts. Before any production release, it is mandatory to update to the latest audited version.
+</Callout>
+
+## What You Can Do
+
+- **Deploy Contracts**: Set up InputSettler, OutputSettler, and Oracle contracts
+- **Integrate Intents**: Build applications that submit and fulfill cross-chain intents
+- **Extend the System**: Create custom Settlers compatible with existing infrastructure
+- **Support Multiple Chains**: Deploy on any EVM-compatible blockchain
+
+## Documentation
 
 <Cards>
-  <Card title="Overview" href="/docs/smart-contracts/overview" />
-  <Card title="Quickstart" href="/docs/smart-contracts/quickstart" />
-  <Card title="Core Contracts" href="/docs/smart-contracts/core-contracts" />
-  <Card title="Deployment" href="/docs/smart-contracts/deployment" />
+  <Card title="Overview" href="/docs/smart-contracts/overview" description="Architecture, key concepts, and security considerations" />
+  <Card title="Quickstart" href="/docs/smart-contracts/quickstart" description="Deploy contracts locally and test intent flows" />
+  <Card title="Core Contracts" href="/docs/smart-contracts/core-contracts" description="Deep dive into InputSettler, OutputSettler, and Oracle" />
+  <Card title="Deployment" href="/docs/smart-contracts/deployment" description="Production deployment guides and best practices" />
 </Cards>
 
-## Next Steps
+## Quick Links
 
-Start with the Overview to understand architecture and key concepts.
-
+- **New to OIF?** Start with [Overview](/docs/smart-contracts/overview)
+- **Ready to build?** Follow the [Quickstart](/docs/smart-contracts/quickstart)
+- **Deploying?** Check [Deployment Guide](/docs/smart-contracts/deployment)
+- **GitHub**: [oif-contracts](https://github.com/openintentsframework/oif-contracts)

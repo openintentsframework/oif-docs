@@ -1,0 +1,276 @@
+---
+title: Authentication
+description: API authentication and authorization methods
+---
+
+# Authentication
+
+OIF Aggregator currently supports multiple authentication strategies that can be configured based on deployment needs.
+
+## Current Status
+
+The default OIF Aggregator deployment uses **no authentication** to enable open access for development and testing.
+
+##Authentication Methods
+
+The aggregator supports configurable authentication strategies:
+
+### 1. No Authentication (Default)
+
+Open access with no authentication required.
+
+**Configuration**:
+```rust
+AggregatorBuilder::new()
+    .start_server()
+    .await
+```
+
+**Usage**:
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{...}'
+```
+
+### 2. API Key Authentication
+
+Token-based authentication using API keys.
+
+**Configuration**:
+```rust
+use oif_aggregator::{AggregatorBuilder, ApiKeyAuthenticator};
+
+let authenticator = ApiKeyAuthenticator::new();
+// Add API keys
+authenticator.add_key("your-api-key-here");
+
+AggregatorBuilder::new()
+    .with_auth(authenticator)
+    .start_server()
+    .await
+```
+
+**Usage**:
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key-here" \
+  -d '{...}'
+```
+
+**TypeScript Example**:
+```typescript
+const response = await fetch('http://localhost:3000/v1/quotes', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-API-Key': 'your-api-key-here'
+  },
+  body: JSON.stringify(request)
+});
+```
+
+### 3. Custom Authentication
+
+Implement custom authentication logic.
+
+**Configuration**:
+```rust
+use oif_aggregator::{AggregatorBuilder, Authenticator};
+use async_trait::async_trait;
+
+struct CustomAuthenticator;
+
+#[async_trait]
+impl Authenticator for CustomAuthenticator {
+    async fn authenticate(&self, headers: &HeaderMap) -> Result<(), AuthError> {
+        // Custom authentication logic
+        let token = headers.get("Authorization")?;
+        // Verify token
+        Ok(())
+    }
+}
+
+AggregatorBuilder::new()
+    .with_auth(CustomAuthenticator)
+    .start_server()
+    .await
+```
+
+## Authentication Errors
+
+### Missing API Key (401)
+
+```json
+{
+  "error": "UNAUTHORIZED",
+  "message": "Missing or invalid API key",
+  "timestamp": 1703123456
+}
+```
+
+### Invalid API Key (403)
+
+```json
+{
+  "error": "FORBIDDEN",
+  "message": "Invalid API key",
+  "timestamp": 1703123456
+}
+```
+
+## Best Practices
+
+### 1. Secure API Key Storage
+
+Never hardcode API keys in source code:
+
+```typescript
+// ❌ Bad
+const API_KEY = 'sk_live_abc123';
+
+// ✅ Good
+const API_KEY = process.env.OIF_API_KEY;
+```
+
+### 2. Key Rotation
+
+Regularly rotate API keys:
+
+```typescript
+// Implement key rotation
+const currentKey = process.env.OIF_API_KEY_CURRENT;
+const fallbackKey = process.env.OIF_API_KEY_FALLBACK;
+
+async function apiCall(request: any) {
+  try {
+    return await makeRequest(request, currentKey);
+  } catch (error: any) {
+    if (error.error === 'FORBIDDEN') {
+      // Try fallback key
+      return await makeRequest(request, fallbackKey);
+    }
+    throw error;
+  }
+}
+```
+
+### 3. Environment-Specific Keys
+
+Use different keys for different environments:
+
+```bash
+# .env.development
+OIF_API_KEY=sk_dev_abc123
+
+# .env.production  
+OIF_API_KEY=sk_live_xyz789
+```
+
+### 4. Request Signing (Future)
+
+For enhanced security, request signing may be supported:
+
+```typescript
+import crypto from 'crypto';
+
+function signRequest(request: any, secret: string): string {
+  const payload = JSON.stringify(request);
+  const timestamp = Date.now();
+  const signature = crypto
+    .createHmac('sha256', secret)
+    .update(`${timestamp}.${payload}`)
+    .digest('hex');
+  
+  return `${timestamp}.${signature}`;
+}
+
+// Usage
+const signature = signRequest(quoteRequest, API_SECRET);
+const response = await fetch('http://localhost:3000/v1/quotes', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Signature': signature
+  },
+  body: JSON.stringify(quoteRequest)
+});
+```
+
+## Production Recommendations
+
+For production deployments, consider:
+
+1. **Enable API Key Authentication**: Prevent unauthorized access
+2. **Use HTTPS**: Encrypt API keys in transit
+3. **Implement Rate Limiting**: Prevent abuse (see [Rate Limits](/docs/apis/rate-limits))
+4. **Monitor Access**: Log authentication attempts
+5. **IP Whitelisting**: Restrict access to known IPs
+
+## Example: Secure Client
+
+```typescript
+class OIFClient {
+  constructor(
+    private baseUrl: string,
+    private apiKey?: string
+  ) {}
+
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+      ...options.headers
+    };
+
+    // Add API key if configured
+    if (this.apiKey) {
+      headers['X-API-Key'] = this.apiKey;
+    }
+
+    const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      ...options,
+      headers
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message);
+    }
+
+    return response.json();
+  }
+
+  async getQuotes(request: QuoteRequest) {
+    return this.request('/v1/quotes', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async submitOrder(request: OrderRequest) {
+    return this.request('/v1/orders', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+}
+
+// Usage
+const client = new OIFClient(
+  'https://api.oif.example.com',
+  process.env.OIF_API_KEY
+);
+
+const quotes = await client.getQuotes(request);
+```
+
+## Next Steps
+
+- Configure [Rate Limits](/docs/apis/rate-limits)
+- Review [Security Best Practices](/docs/aggregators/configuration#security)
+- See [Complete Examples](/docs/apis/examples)
+

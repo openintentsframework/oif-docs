@@ -1,0 +1,14 @@
+{
+  "title": "API Reference",
+  "pages": [
+    "authentication",
+    "quote-api",
+    "order-api",
+    "solver-api",
+    "health",
+    "errors",
+    "rate-limits",
+    "examples"
+  ]
+}
+

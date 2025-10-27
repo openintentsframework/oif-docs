@@ -1,0 +1,305 @@
+---
+title: API Overview
+description: Complete API reference for integrating with the Open Intents Framework
+---
+
+# API Overview
+
+The Open Intents Framework exposes RESTful APIs for quote aggregation, intent submission, and solver management. This section provides comprehensive documentation for integrating with OIF.
+
+## Base URL
+
+The default base URL for a local OIF aggregator instance is:
+
+```
+http://localhost:3000
+```
+
+For production deployments, use your configured domain and port.
+
+## API Versions
+
+OIF APIs are versioned using URL path prefixes:
+
+- **v1** (`/v1/*`) - Current stable version
+
+All endpoints documented here use the `/v1/` prefix.
+
+## Quick Start
+
+### 1. Get Quotes
+
+Request quotes from multiple solvers:
+
+```bash
+curl -X POST http://localhost:3000/v1/quotes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+    "intent": {
+      "intentType": "oif-swap",
+      "inputs": [{
+        "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "amount": "1000000000"
+      }],
+      "outputs": [{
+        "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
+        "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      }]
+    },
+    "swapType": "exact-input"
+  }'
+```
+
+### 2. Submit Intent
+
+Submit a signed intent for execution:
+
+```bash
+curl -X POST http://localhost:3000/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "quoteId": "quote_abc123",
+    "signature": "0x...",
+    "userAddress": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045"
+  }'
+```
+
+### 3. Check Order Status
+
+Track intent execution:
+
+```bash
+curl http://localhost:3000/v1/orders/order_xyz789
+```
+
+## Core Concepts
+
+### Address Format
+
+OIF uses **EIP-7930 cross-chain address format** for unambiguous identification:
+
+```
+0x0001 + chainId (4 bytes) + address (20 bytes)
+```
+
+**Examples**:
+- Ethereum mainnet: `0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045`
+- Polygon: `0x0001000001890314D8DA6BF26964AF9D7EED9E03E53415D37AA96045`
+
+This format embeds chain ID directly in the address, eliminating ambiguity in cross-chain operations.
+
+### Amount Format
+
+All token amounts are represented as **decimal strings** (not numbers) to preserve precision for large integers like uint256:
+
+```json
+{
+  "amount": "1000000000000000000"  // 1 ETH (18 decimals)
+}
+```
+
+Always use the smallest unit:
+- ETH: wei (18 decimals)
+- USDC: micro-units (6 decimals)
+- BTC: satoshi (8 decimals)
+
+### Swap Types
+
+OIF supports two quote request modes:
+
+**exact-input**: User specifies exact input amount, solver quotes output
+```json
+{
+  "swapType": "exact-input",
+  "inputs": [{ "amount": "1000000000" }],  // Fixed: 1000 USDC
+  "outputs": [{ "amount": undefined }]      // To be quoted
+}
+```
+
+**exact-output**: User specifies exact output amount, solver quotes input needed
+```json
+{
+  "swapType": "exact-output",
+  "inputs": [{ "amount": undefined }],       // To be quoted
+  "outputs": [{ "amount": "1000000000000000000" }]  // Fixed: 1 ETH
+}
+```
+
+### Lock Mechanisms
+
+OIF supports multiple asset locking protocols:
+
+- **`the-compact`**: The Compact protocol for gas-efficient resource locks
+- **`rhinestone`**: Rhinestone modular account abstraction framework
+
+```json
+{
+  "lock": {
+    "kind": "the-compact",
+    "params": {
+      "nonce": "123",
+      "expiry": 1234567890
+    }
+  }
+}
+```
+
+## API Endpoints
+
+### Core Endpoints
+
+<Cards>
+  <Card title="Quotes API" href="/docs/apis/quote-api" description="Request quotes from multiple solvers" />
+  <Card title="Orders API" href="/docs/apis/order-api" description="Submit and track intent execution" />
+  <Card title="Solvers API" href="/docs/apis/solver-api" description="Query available solvers" />
+  <Card title="Health Check" href="/docs/apis/health" description="Monitor service status" />
+</Cards>
+
+### Supporting Documentation
+
+<Cards>
+  <Card title="Authentication" href="/docs/apis/authentication" description="API authentication and authorization" />
+  <Card title="Error Codes" href="/docs/apis/errors" description="Error codes and handling" />
+  <Card title="Rate Limits" href="/docs/apis/rate-limits" description="Rate limiting policies" />
+  <Card title="Examples" href="/docs/apis/examples" description="Complete integration examples" />
+</Cards>
+
+## Response Format
+
+All API responses follow a consistent structure:
+
+### Success Response
+
+```json
+{
+  "data": { ... },
+  "metadata": { ... }
+}
+```
+
+### Error Response
+
+```json
+{
+  "error": "ERROR_CODE",
+  "message": "Human-readable error description",
+  "timestamp": 1703123456
+}
+```
+
+## HTTP Status Codes
+
+OIF APIs use standard HTTP status codes:
+
+| Code | Meaning | Usage |
+|------|---------|-------|
+| 200 | OK | Request succeeded |
+| 400 | Bad Request | Invalid request parameters |
+| 404 | Not Found | Resource not found (order, quote) |
+| 500 | Internal Server Error | Server error |
+| 502 | Bad Gateway | Solver communication error |
+| 503 | Service Unavailable | Service degraded or down |
+
+## Content Type
+
+All requests and responses use JSON:
+
+```
+Content-Type: application/json
+```
+
+## CORS Support
+
+The aggregator supports CORS for browser-based applications. Configure CORS settings in your aggregator configuration.
+
+## OpenAPI Specification
+
+Interactive API documentation is available when running with OpenAPI feature:
+
+```bash
+cargo run --features openapi
+```
+
+Then visit:
+- **Swagger UI**: `http://localhost:3000/swagger-ui`
+- **OpenAPI JSON**: `http://localhost:3000/api-docs/openapi.json`
+
+## Standards Compliance
+
+OIF APIs implement:
+
+- **EIP-7930**: Cross-chain address format
+- **ERC-7930**: Open Intent Framework API specification
+- **EIP-7683**: Cross-chain intent standard (via The Compact)
+
+## Integration Paths
+
+Choose your integration approach:
+
+### Direct API Integration
+
+Make HTTP requests directly to aggregator endpoints. Ideal for:
+- Custom implementations
+- Non-JavaScript/TypeScript environments
+- Full control over requests
+
+See [Examples](/docs/apis/examples) for code samples in multiple languages.
+
+### SDK Integration
+
+Use TypeScript SDK for type-safe integration (coming soon):
+
+```typescript
+import { OIFClient } from '@oif/sdk';
+
+const client = new OIFClient({
+  baseUrl: 'http://localhost:3000'
+});
+
+const quotes = await client.getQuotes({...});
+```
+
+### Solver Integration
+
+Run your own solver to fulfill intents. See [Solver Documentation](/docs/solvers).
+
+## Testing
+
+### Local Testing
+
+Run a local aggregator for development:
+
+```bash
+cd oif-aggregator
+export INTEGRITY_SECRET="your-secure-secret-min-32-chars"
+cargo run
+```
+
+### Testnet Testing
+
+Deploy solvers and aggregators to testnets before production. See [Integration Guide](/docs/integration/overview).
+
+## Rate Limits
+
+Default rate limits (configurable):
+- **100 requests per minute** per IP
+- **10 requests per second** burst
+
+See [Rate Limits](/docs/apis/rate-limits) for details.
+
+## Support
+
+- **Documentation**: Browse this API reference
+- **OpenAPI**: Interactive playground at `/swagger-ui`
+- **Issues**: [GitHub Issues](https://github.com/openintentsframework/oif-aggregator/issues)
+- **Examples**: See [Examples](/docs/apis/examples) section
+
+## Next Steps
+
+1. **Learn the Basics**: Read [Quote API](/docs/apis/quote-api) and [Order API](/docs/apis/order-api)
+2. **See Examples**: Check [API Examples](/docs/apis/examples)
+3. **Integrate**: Follow [Integration Guide](/docs/integration/overview)
+4. **Test**: Deploy to testnet and verify functionality
+

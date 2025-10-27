@@ -1,0 +1,362 @@
+---
+title: Solvers API
+description: Query available solvers and their capabilities
+---
+
+# Solvers API
+
+The Solvers API provides endpoints to discover and query information about available solvers in the OIF network.
+
+## Endpoints
+
+### List All Solvers
+```
+GET /v1/solvers
+```
+
+### Get Solver Details
+```
+GET /v1/solvers/:id
+```
+
+## List All Solvers
+
+Get information about all configured solvers.
+
+### Request Format
+
+```bash
+GET /v1/solvers
+```
+
+### Example Request
+
+```bash
+curl http://localhost:3000/v1/solvers
+```
+
+### Success Response (200 OK)
+
+```json
+{
+  "solvers": [
+    {
+      "solverId": "solver-best-price",
+      "name": "Best Price Solver",
+      "description": "Optimizes for best execution price",
+      "endpoint": "https://api.solver1.com/v1",
+      "enabled": true,
+      "healthy": true,
+      "supportedAssets": [
+        {
+          "address": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "symbol": "USDC",
+          "name": "USD Coin",
+          "decimals": 6,
+          "chainId": 1
+        },
+        {
+          "address": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "symbol": "WETH",
+          "name": "Wrapped Ether",
+          "decimals": 18,
+          "chainId": 1
+        }
+      ],
+      "capabilities": {
+        "crossChain": true,
+        "gasless": false,
+        "maxOutputs": 5
+      },
+      "performance": {
+        "successRate": 0.95,
+        "avgFillTime": 30,
+        "totalOrders": 1234
+      }
+    }
+  ],
+  "total": 1
+}
+```
+
+## Get Solver Details
+
+Get detailed information about a specific solver.
+
+### Request Format
+
+```bash
+GET /v1/solvers/:solverId
+```
+
+### Example Request
+
+```bash
+curl http://localhost:3000/v1/solvers/solver-best-price
+```
+
+### Success Response (200 OK)
+
+```json
+{
+  "solverId": "solver-best-price",
+  "name": "Best Price Solver",
+  "description": "Optimizes for best execution price across multiple DEXs",
+  "endpoint": "https://api.solver1.com/v1",
+  "adapterId": "oif-v1",
+  "enabled": true,
+  "healthy": true,
+  "timeout": 2000,
+  "maxRetries": 1,
+  "supportedAssets": [
+    {
+      "address": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6,
+      "chainId": 1
+    }
+  ],
+  "supportedChains": [1, 10, 42161, 8453],
+  "capabilities": {
+    "crossChain": true,
+    "gasless": false,
+    "maxOutputs": 5,
+    "supportedLockTypes": ["the-compact", "rhinestone"],
+    "supportedIntentTypes": ["oif-swap"]
+  },
+  "performance": {
+    "successRate": 0.95,
+    "avgFillTime": 30,
+    "avgResponseTime": 450,
+    "totalOrders": 1234,
+    "completedOrders": 1172,
+    "failedOrders": 62,
+    "last24hOrders": 48
+  },
+  "healthStatus": {
+    "lastCheck": 1703123456,
+    "uptime": 0.99,
+    "errors": []
+  }
+}
+```
+
+### Error Response (404)
+
+```json
+{
+  "error": "SOLVER_NOT_FOUND",
+  "message": "Solver solver-xyz not found",
+  "timestamp": 1703123456
+}
+```
+
+## Response Fields
+
+### Solver Object
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `solverId` | string | Unique solver identifier |
+| `name` | string | Human-readable solver name |
+| `description` | string | Solver description |
+| `endpoint` | string | Solver API endpoint |
+| `adapterId` | string | Adapter protocol version |
+| `enabled` | boolean | Whether solver is active |
+| `healthy` | boolean | Current health status |
+| `timeout` | number | Request timeout (ms) |
+| `maxRetries` | number | Max retry attempts |
+
+### Supported Asset
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `address` | Address | Token address (EIP-7930 format) |
+| `symbol` | string | Token symbol (e.g., "USDC") |
+| `name` | string | Full token name |
+| `decimals` | number | Token decimals |
+| `chainId` | number | Chain ID |
+
+### Capabilities
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `crossChain` | boolean | Supports cross-chain swaps |
+| `gasless` | boolean | Supports gasless execution |
+| `maxOutputs` | number | Max outputs per intent |
+| `supportedLockTypes` | string[] | Lock mechanisms supported |
+| `supportedIntentTypes` | string[] | Intent types supported |
+
+### Performance Metrics
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `successRate` | number | Success rate (0-1) |
+| `avgFillTime` | number | Average fill time (seconds) |
+| `avgResponseTime` | number | Average response time (ms) |
+| `totalOrders` | number | Total orders executed |
+| `completedOrders` | number | Successfully completed |
+| `failedOrders` | number | Failed orders |
+| `last24hOrders` | number | Orders in last 24 hours |
+
+## Filtering Solvers
+
+### By Asset Support
+
+Find solvers supporting specific assets:
+
+```typescript
+const solvers = await fetch('http://localhost:3000/v1/solvers')
+  .then(r => r.json());
+
+const usdcSolvers = solvers.solvers.filter(solver =>
+  solver.supportedAssets.some(asset => asset.symbol === 'USDC')
+);
+```
+
+### By Chain Support
+
+Find solvers for specific chains:
+
+```typescript
+const arbitrumSolvers = solvers.solvers.filter(solver =>
+  solver.supportedChains?.includes(42161) // Arbitrum
+);
+```
+
+### By Performance
+
+Find best performing solvers:
+
+```typescript
+const bestSolvers = solvers.solvers
+  .filter(s => s.healthy && s.enabled)
+  .sort((a, b) => b.performance.successRate - a.performance.successRate)
+  .slice(0, 3);
+```
+
+## Solver Health
+
+Solvers are continuously monitored for health:
+
+### Health Check Process
+
+1. **Periodic Pings**: Aggregator pings solvers every 60 seconds
+2. **Response Validation**: Validates solver responses
+3. **Circuit Breaker**: Temporarily disables failing solvers
+4. **Auto-Recovery**: Re-enables solvers when healthy
+
+### Health Indicators
+
+- **Healthy**: All recent requests successful
+- **Degraded**: Some failures but still enabled
+- **Unhealthy**: High failure rate, circuit breaker triggered
+
+### Checking Health
+
+```bash
+curl http://localhost:3000/health
+```
+
+```json
+{
+  "status": "healthy",
+  "version": "0.1.0",
+  "solvers": {
+    "total": 3,
+    "active": 3,
+    "inactive": 0,
+    "healthy": 2,
+    "unhealthy": 1,
+    "healthDetails": {
+      "solver-1": true,
+      "solver-2": true,
+      "solver-3": false
+    }
+  }
+}
+```
+
+## Solver Selection
+
+The aggregator selects solvers based on:
+
+1. **Enabled Status**: Only enabled solvers are queried
+2. **Health Status**: Unhealthy solvers may be skipped
+3. **Asset Support**: Must support requested assets
+4. **Chain Support**: Must support required chains
+5. **Capabilities**: Must meet intent requirements
+
+## Examples
+
+### Example 1: List All Healthy Solvers
+
+```bash
+curl http://localhost:3000/v1/solvers | jq '.solvers[] | select(.healthy == true)'
+```
+
+### Example 2: Find Fast Solvers
+
+```bash
+curl http://localhost:3000/v1/solvers | \
+  jq '.solvers[] | select(.performance.avgFillTime < 60)'
+```
+
+### Example 3: Get Cross-Chain Solvers
+
+```bash
+curl http://localhost:3000/v1/solvers | \
+  jq '.solvers[] | select(.capabilities.crossChain == true)'
+```
+
+### Example 4: TypeScript Integration
+
+```typescript
+interface Solver {
+  solverId: string;
+  name: string;
+  enabled: boolean;
+  healthy: boolean;
+  supportedAssets: Asset[];
+  capabilities: Capabilities;
+  performance: Performance;
+}
+
+async function findBestSolver(
+  inputAsset: string,
+  outputAsset: string
+): Promise<Solver | null> {
+  const response = await fetch('http://localhost:3000/v1/solvers');
+  const { solvers } = await response.json();
+  
+  // Filter for solvers supporting both assets
+  const compatible = solvers.filter(solver =>
+    solver.enabled &&
+    solver.healthy &&
+    solver.supportedAssets.some(a => a.address === inputAsset) &&
+    solver.supportedAssets.some(a => a.address === outputAsset)
+  );
+  
+  // Sort by success rate
+  compatible.sort((a, b) => 
+    b.performance.successRate - a.performance.successRate
+  );
+  
+  return compatible[0] || null;
+}
+```
+
+## Rate Limits
+
+- **GET /v1/solvers**: 100 requests/minute per IP
+- **GET /v1/solvers/:id**: 100 requests/minute per IP
+
+See [Rate Limits](/docs/apis/rate-limits) for details.
+
+## Next Steps
+
+- Query [Quotes API](/docs/apis/quote-api) with discovered solvers
+- See [Complete Examples](/docs/apis/examples)
+- Learn about [Solver Development](/docs/solvers)
+

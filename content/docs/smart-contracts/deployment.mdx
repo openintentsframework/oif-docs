@@ -1,0 +1,530 @@
+---
+title: Deployment
+description: Production deployment guide for OIF smart contracts
+---
+
+# Deployment Guide
+
+This guide covers deploying OIF smart contracts to production environments.
+
+<Callout type="warn">
+**Security Warning**: This project currently uses an unaudited version of OpenZeppelin Contracts. Before any production release, update to the latest audited version.
+</Callout>
+
+
+<Callout type="warn">
+The deployment scripts are shared as refference but have not been deeply tested, the docs will be updated with the final scripts when verified
+</Callout>
+
+## Pre-Deployment Checklist
+
+Before deploying to production, ensure you have:
+
+- [ ] Completed thorough testing on testnets
+- [ ] Updated to audited OpenZeppelin Contracts version
+- [ ] Reviewed and understood security considerations
+- [ ] Prepared deployment wallet with sufficient funds
+- [ ] Documented deployment parameters
+- [ ] Set up monitoring and alerting infrastructure
+- [ ] Prepared emergency response procedures
+
+## Environment Setup
+
+### 1. Install Dependencies
+
+```bash
+# Clone repository
+git clone https://github.com/openintentsframework/oif-contracts.git
+cd oif-contracts
+
+# Install Foundry (if not already installed)
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+
+# Install contract dependencies
+forge install
+```
+
+### 2. Environment Variables
+
+Create a `.env` file with deployment configuration:
+
+```bash
+# Network RPC URLs
+MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+ARBITRUM_RPC_URL=https://arb-mainnet.g.alchemy.com/v2/YOUR_KEY
+OPTIMISM_RPC_URL=https://opt-mainnet.g.alchemy.com/v2/YOUR_KEY
+BASE_RPC_URL=https://base-mainnet.g.alchemy.com/v2/YOUR_KEY
+
+# Deployment wallet
+DEPLOYER_PRIVATE_KEY=0x...
+
+# Etherscan API keys for verification
+ETHERSCAN_API_KEY=YOUR_KEY
+ARBISCAN_API_KEY=YOUR_KEY
+OPTIMISTIC_ETHERSCAN_API_KEY=YOUR_KEY
+BASESCAN_API_KEY=YOUR_KEY
+
+# Oracle addresses (if using existing oracle)
+WORMHOLE_RELAYER_ADDRESS=0x...
+LAYERZERO_ENDPOINT_ADDRESS=0x...
+
+# Deployment parameters
+INPUT_CHAIN_ID=1
+OUTPUT_CHAIN_ID=42161
+```
+
+Load environment variables:
+
+```bash
+source .env
+```
+
+## Deployment Strategy
+
+### Multi-Chain Deployment Order
+
+1. **Output Chain First**: Deploy OutputSettler on destination chain
+2. **Oracle Next**: Deploy or configure oracle on input chain
+3. **Input Chain Last**: Deploy InputSettler with oracle reference
+
+This order ensures all dependencies are available when deploying InputSettler.
+
+## Deployment Scripts
+
+### Basic Deployment Script
+
+Create `script/Deploy.s.sol`:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.27;
+
+import {Script, console} from "forge-std/Script.sol";
+import {InputSettlerEscrow} from "../src/input/escrow/InputSettlerEscrow.sol";
+import {OutputSettler} from "../src/output/OutputSettler.sol";
+import {WormholeOracle} from "../src/integrations/oracles/wormhole/WormholeOracle.sol";
+
+contract DeployScript is Script {
+    function run() external {
+        uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        address wormholeRelayer = vm.envAddress("WORMHOLE_RELAYER_ADDRESS");
+        
+        vm.startBroadcast(deployerPrivateKey);
+        
+        // 1. Deploy Oracle (on input chain)
+        WormholeOracle oracle = new WormholeOracle(wormholeRelayer);
+        console.log("Oracle deployed at:", address(oracle));
+        
+        // 2. Deploy InputSettler (on input chain)
+        InputSettlerEscrow inputSettler = new InputSettlerEscrow(
+            address(oracle)
+        );
+        console.log("InputSettler deployed at:", address(inputSettler));
+        
+        // 3. Deploy OutputSettler (deploy on output chain separately)
+        // This would be run with --rpc-url $OUTPUT_CHAIN_RPC
+        OutputSettler outputSettler = new OutputSettler();
+        console.log("OutputSettler deployed at:", address(outputSettler));
+        
+        vm.stopBroadcast();
+    }
+}
+```
+
+### Deploy to Network
+
+#### Deploy to Mainnet (Input Chain)
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url $MAINNET_RPC_URL \
+  --broadcast \
+  --verify \
+  --etherscan-api-key $ETHERSCAN_API_KEY
+```
+
+#### Deploy to Arbitrum (Output Chain)
+
+```bash
+forge script script/DeployOutput.s.sol \
+  --rpc-url $ARBITRUM_RPC_URL \
+  --broadcast \
+  --verify \
+  --etherscan-api-key $ARBISCAN_API_KEY
+```
+
+## Advanced Deployment
+
+### Using CREATE2 for Deterministic Addresses
+
+Deploy contracts to the same address across chains:
+
+```solidity
+contract DeterministicDeploy is Script {
+    function run() external {
+        bytes32 salt = keccak256("OIF_V1");
+        
+        vm.startBroadcast();
+        
+        address predicted = computeCreate2Address(
+            salt,
+            keccak256(type(OutputSettler).creationCode)
+        );
+        
+        console.log("Predicted address:", predicted);
+        
+        OutputSettler outputSettler = new OutputSettler{salt: salt}();
+        require(address(outputSettler) == predicted, "Address mismatch");
+        
+        vm.stopBroadcast();
+    }
+}
+```
+
+## Contract Verification
+
+### Automatic Verification
+
+Foundry can verify during deployment:
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url $RPC_URL \
+  --broadcast \
+  --verify \
+  --etherscan-api-key $ETHERSCAN_API_KEY
+```
+
+### Manual Verification
+
+If automatic verification fails:
+
+```bash
+forge verify-contract \
+  --chain-id 1 \
+  --num-of-optimizations 200 \
+  --watch \
+  --constructor-args $(cast abi-encode "constructor(address)" "0x...") \
+  --etherscan-api-key $ETHERSCAN_API_KEY \
+  --compiler-version v0.8.27 \
+  0xYourContractAddress \
+  src/input/escrow/InputSettlerEscrow.sol:InputSettlerEscrow
+```
+
+## Post-Deployment
+
+### 1. Verify Deployment
+
+```bash
+# Check contract code
+cast code $CONTRACT_ADDRESS --rpc-url $RPC_URL
+
+# Check ownership
+cast call $CONTRACT_ADDRESS "owner()" --rpc-url $RPC_URL
+
+# Test basic functionality
+cast call $CONTRACT_ADDRESS "hasAttested(bytes32)" $PAYLOAD --rpc-url $RPC_URL
+```
+
+### 2. Initialize Contracts
+
+Some contracts may require initialization:
+
+```bash
+# Example: Set oracle parameters
+cast send $ORACLE_ADDRESS \
+  "setTrustedRemote(uint256,address)" \
+  $OUTPUT_CHAIN_ID \
+  $OUTPUT_SETTLER_ADDRESS \
+  --private-key $DEPLOYER_PRIVATE_KEY \
+  --rpc-url $RPC_URL
+```
+
+### 3. Document Deployment
+
+Create a deployment record:
+
+```json
+{
+  "network": "mainnet",
+  "chainId": 1,
+  "timestamp": "2024-01-15T10:30:00Z",
+  "deployer": "0x...",
+  "contracts": {
+    "InputSettlerEscrow": {
+      "address": "0x...",
+      "constructorArgs": ["0x..."],
+      "verified": true,
+      "blockNumber": 12345678
+    },
+    "Oracle": {
+      "address": "0x...",
+      "constructorArgs": ["0x..."],
+      "verified": true,
+      "blockNumber": 12345677
+    }
+  },
+  "configuration": {
+    "oracleType": "wormhole",
+    "supportedOutputChains": [42161, 10, 8453]
+  }
+}
+```
+
+## Network-Specific Considerations
+
+### Ethereum Mainnet
+
+- **Gas Price**: Monitor and set appropriate gas price
+- **Verification**: Use Etherscan
+- **Finality**: ~15 minutes (2 epochs)
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url $MAINNET_RPC_URL \
+  --gas-price 30gwei \
+  --broadcast
+```
+
+### Arbitrum
+
+- **Gas**: Much lower than mainnet
+- **Verification**: Use Arbiscan
+- **Finality**: Near-instant L2 finality
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url $ARBITRUM_RPC_URL \
+  --legacy \
+  --broadcast
+```
+
+### Optimism
+
+- **Gas**: EIP-1559 compatible
+- **Verification**: Use Optimistic Etherscan
+- **Batch Submissions**: Cheaper for multiple operations
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url $OPTIMISM_RPC_URL \
+  --broadcast
+```
+
+### Base
+
+- **Similar to Optimism**: Base is built on OP Stack
+- **Verification**: Use Basescan
+- **Lower Fees**: Often cheaper than Optimism
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url $BASE_RPC_URL \
+  --broadcast
+```
+
+## Monitoring & Maintenance
+
+### Event Monitoring
+
+Monitor key contract events:
+
+```solidity
+// InputSettler events
+event IntentSubmitted(bytes32 indexed intentHash, address indexed sponsor);
+event IntentFulfilled(bytes32 indexed intentHash, address indexed solver);
+event IntentCancelled(bytes32 indexed intentHash);
+
+// OutputSettler events
+event OutputFilled(bytes32 indexed intentHash, uint256 indexed outputIndex);
+event AttestationGenerated(bytes32 indexed payload);
+```
+
+### Health Checks
+
+Implement health check scripts:
+
+```bash
+#!/bin/bash
+# health-check.sh
+
+# Check if contracts are responsive
+cast call $INPUT_SETTLER_ADDRESS "owner()" --rpc-url $RPC_URL
+
+# Check oracle status
+cast call $ORACLE_ADDRESS "hasAttested(bytes32)" "0x..." --rpc-url $RPC_URL
+
+# Check balance thresholds
+balance=$(cast balance $SOLVER_ADDRESS --rpc-url $RPC_URL)
+echo "Solver balance: $balance"
+```
+
+### Alerting
+
+Set up alerts for:
+- Failed transactions
+- Low solver balances
+- Unusual activity patterns
+- Oracle downtime
+- Settlement delays
+
+## Upgrading Contracts
+
+While OIF contracts are immutable, you can deploy new versions:
+
+### 1. Deploy New Version
+
+```bash
+forge script script/DeployV2.s.sol \
+  --rpc-url $RPC_URL \
+  --broadcast
+```
+
+### 2. Migrate State (if applicable)
+
+```solidity
+contract Migration is Script {
+    function run() external {
+        vm.startBroadcast();
+        
+        // Deploy new version
+        InputSettlerV2 newSettler = new InputSettlerV2(oracleAddress);
+        
+        // Migrate critical state
+        // Note: This depends on your specific upgrade path
+        
+        vm.stopBroadcast();
+    }
+}
+```
+
+### 3. Communicate Changes
+
+- Notify integrators of new addresses
+- Update documentation
+- Provide migration guide
+- Maintain old version during transition period
+
+## Security Considerations
+
+### Access Control
+
+```solidity
+// Use multi-sig for admin functions
+contract SecureInputSettler is InputSettlerEscrow {
+    address public multisig;
+    
+    constructor(address _oracle, address _multisig) 
+        InputSettlerEscrow(_oracle) 
+    {
+        multisig = _multisig;
+    }
+    
+    modifier onlyMultisig() {
+        require(msg.sender == multisig, "Not authorized");
+        _;
+    }
+}
+```
+
+### Emergency Pause
+
+Implement emergency pause functionality:
+
+```solidity
+contract PausableInputSettler is InputSettlerEscrow, Pausable {
+    function submitIntent(Intent calldata intent) 
+        external 
+        whenNotPaused 
+        returns (bytes32) 
+    {
+        // Implementation
+    }
+    
+    function pause() external onlyOwner {
+        _pause();
+    }
+}
+```
+
+### Rate Limiting
+
+Consider implementing rate limits for production:
+
+```solidity
+contract RateLimitedSettler is InputSettlerEscrow {
+    mapping(address => uint256) public lastSubmission;
+    uint256 public constant MIN_INTERVAL = 1 minutes;
+    
+    function submitIntent(Intent calldata intent) 
+        external 
+        returns (bytes32) 
+    {
+        require(
+            block.timestamp >= lastSubmission[msg.sender] + MIN_INTERVAL,
+            "Rate limit exceeded"
+        );
+        lastSubmission[msg.sender] = block.timestamp;
+        
+        return super.submitIntent(intent);
+    }
+}
+```
+
+## Troubleshooting
+
+### Deployment Fails
+
+**Issue**: Transaction reverts during deployment
+
+**Solutions**:
+1. Check gas limit: `--gas-limit 5000000`
+2. Verify constructor arguments
+3. Ensure deployer has sufficient funds
+4. Check for network congestion
+
+### Verification Fails
+
+**Issue**: Etherscan verification fails
+
+**Solutions**:
+1. Wait a few minutes and retry
+2. Verify manually with exact compiler settings
+3. Check optimizer runs match (`--num-of-optimizations 200`)
+4. Ensure Solidity version matches
+
+### Oracle Not Attesting
+
+**Issue**: Oracle doesn't generate attestations
+
+**Solutions**:
+1. Verify oracle is properly configured
+2. Check trusted remote addresses
+3. Ensure relayer is funded
+4. Review oracle logs
+
+## Best Practices
+
+1. **Test on Testnet First**: Always deploy to testnet before mainnet
+2. **Use Multi-Sig**: Protect admin functions with multi-signature wallets
+3. **Document Everything**: Keep detailed deployment records
+4. **Monitor Continuously**: Set up comprehensive monitoring
+5. **Plan for Upgrades**: Design upgrade paths even for immutable contracts
+6. **Security Audits**: Get professional audits before production deployment
+7. **Emergency Procedures**: Have clear procedures for handling issues
+
+## Resources
+
+- [Foundry Deployment Guide](https://book.getfoundry.sh/forge/deploying)
+- [OpenZeppelin Defender](https://docs.openzeppelin.com/defender/)
+- [Tenderly Monitoring](https://docs.tenderly.co/)
+- [Multi-Sig Wallets](https://gnosis-safe.io/)
+
+## Next Steps
+
+- **Set Up Monitoring**: Implement comprehensive monitoring and alerting
+- **Deploy Solvers**: Get solver infrastructure running with [Solver Guide](/docs/solvers)
+- **Configure Aggregator**: Set up aggregator to route intents
+- **Test End-to-End**: Run complete cross-chain intent flows
+

@@ -1,4 +1,10 @@
 {
-  "title": "Smart Contracts"
+  "title": "Smart Contracts",
+  "pages": [
+    "overview",
+    "quickstart",
+    "core-contracts",
+    "deployment"
+  ]
 }
 

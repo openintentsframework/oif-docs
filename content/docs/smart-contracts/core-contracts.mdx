@@ -1,0 +1,437 @@
+---
+title: Core Contracts
+description: Deep dive into OIF smart contract implementations
+---
+
+# Core Contracts
+
+This guide provides detailed information about OIF's core smart contract implementations.
+
+## InputSettler Contracts
+
+InputSettler contracts are deployed on the input (source) chain and manage the locking and release of input assets.
+
+### InputSettlerCompact
+
+Gas-efficient implementation using Resource Locks (ERC-7683 Compact).
+
+**Location**: `src/input/compact/InputSettlerCompact.sol`
+
+**Key Features:**
+- Uses Permit2 for gasless approvals
+- Resource Locks instead of traditional escrow
+- Minimal gas overhead for settlement
+- Supports compact encoding for cross-chain data
+
+**When to Use:**
+- High-volume applications requiring gas efficiency
+- Integrations with Permit2-compatible systems
+- Applications prioritizing transaction cost minimization
+
+**Interface:**
+```solidity
+interface IInputSettlerCompact {
+    function submitIntent(
+        CompactIntent calldata intent
+    ) external returns (bytes32 intentHash);
+    
+    function validateAndClaim(
+        bytes32 intentHash,
+        bytes calldata proof
+    ) external;
+    
+    function cancelIntent(bytes32 intentHash) external;
+}
+```
+
+### InputSettlerEscrow
+
+Traditional escrow-based implementation with straightforward token locking.
+
+**Location**: `src/input/escrow/InputSettlerEscrow.sol`
+
+**Key Features:**
+- Standard ERC-20 token transfers
+- Explicit escrow locking and unlocking
+- Simple integration path
+- Compatible with any ERC-20 token
+
+**When to Use:**
+- Simple integration requirements
+- No Permit2 support needed
+- Standard ERC-20 workflows
+- Testing and development
+
+**Interface:**
+```solidity
+interface IInputSettlerEscrow {
+    function submitIntent(
+        Intent calldata intent
+    ) external returns (bytes32 intentHash);
+    
+    function claimInputs(bytes32 intentHash) external;
+    
+    function refund(bytes32 intentHash) external;
+}
+```
+
+### InputSettlerPurchase
+
+Optional extension for order purchasing/underwriting functionality.
+
+**Location**: `src/input/InputSettlerPurchase.sol`
+
+**Key Features:**
+- Enables capital rotation for solvers
+- Supports underwriting by third parties
+- Allows users to receive assets faster
+- Maintains security through validation
+
+**Purpose:**
+1. **Solver Capital Efficiency**: Borrow assets from less risk-averse solvers
+2. **Improved UX**: Users acting as solvers can receive assets faster
+
+**Usage:**
+```solidity
+contract CustomInputSettler is InputSettlerPurchase {
+    // Your implementation
+    
+    function purchaseOrder(
+        bytes32 intentHash,
+        address newSolver,
+        uint256 price
+    ) external {
+        // Purchase order logic
+        _transferOwnership(intentHash, newSolver);
+    }
+}
+```
+
+## OutputSettler Contracts
+
+OutputSettler contracts are deployed on the output (destination) chain and handle solver fills.
+
+### OutputSettler
+
+Main implementation for accepting and validating output fills.
+
+**Location**: `src/output/OutputSettler.sol`
+
+**Key Features:**
+- Accepts fills from any solver
+- Generates attestations for oracle systems
+- Implements `IPayloadValidator` interface
+- Validates payload integrity
+- Supports multiple outputs per intent
+
+**Core Functions:**
+```solidity
+interface IOutputSettler {
+    function fillOutput(
+        bytes32 intentHash,
+        uint256 outputIndex,
+        address recipient,
+        uint256 amount,
+        bytes calldata fillData
+    ) external;
+    
+    function hasAttested(bytes32 payload) external view returns (bool);
+    
+    function getOutputStatus(
+        bytes32 intentHash,
+        uint256 outputIndex
+    ) external view returns (OutputStatus);
+}
+```
+
+**Output Structure:**
+```solidity
+struct MandateOutput {
+    address token;          // Output token address
+    uint256 amount;         // Output amount
+    uint256 chainId;        // Destination chain ID
+    address recipient;      // Recipient address
+    bytes callbackData;     // Optional callback data
+}
+```
+
+### Output Fill Process
+
+1. **Solver Approval**: Solver approves OutputSettler to spend tokens
+2. **Fill Submission**: Solver calls `fillOutput()` with intent details
+3. **Token Transfer**: OutputSettler transfers tokens to recipient
+4. **Attestation**: OutputSettler marks payload as attested
+5. **Callback** (optional): Execute callback on recipient contract
+
+**Example:**
+```solidity
+// 1. Approve tokens
+IERC20(outputToken).approve(address(outputSettler), amount);
+
+// 2. Fill output
+outputSettler.fillOutput(
+    intentHash,
+    0,              // Output index
+    userAddress,    // Recipient
+    outputAmount,   // Amount
+    ""              // No callback data
+);
+
+// 3. Verify attestation
+require(outputSettler.hasAttested(payload), "Not attested");
+```
+
+## Oracle Contracts
+
+Oracle contracts provide the proof layer connecting input and output chains.
+
+### BaseInputOracle
+
+Base implementation providing standardized attestation storage.
+
+**Location**: `src/oracles/BaseInputOracle.sol`
+
+**Key Features:**
+- Standardized attestation storage structure
+- Efficient lookup via `hasAttested()`
+- Compatible with all InputSettler implementations
+- Extensible for different messaging protocols
+
+**Interface:**
+```solidity
+interface IInputOracle {
+    function hasAttested(
+        uint256 chainId,
+        bytes32 payload
+    ) external view returns (bool);
+    
+    function submitAttestation(
+        uint256 chainId,
+        bytes32 payload,
+        bytes calldata proof
+    ) external;
+}
+```
+
+### Oracle Integrations
+
+OIF supports various oracle types located in `src/integrations/oracles/`:
+
+#### Wormhole Oracle
+Cross-chain messaging via Wormhole protocol.
+
+**Features:**
+- Guardian-based validation
+- Fast finality
+- Wide chain support
+- Battle-tested security
+
+#### LayerZero Oracle
+Messaging via LayerZero protocol.
+
+**Features:**
+- Configurable security stack
+- Omnichain messaging
+- Custom validation logic
+
+#### Custom Oracle
+Implement your own oracle for specific use cases.
+
+**Requirements:**
+1. Implement `IInputOracle` interface
+2. Provide `hasAttested()` view function
+3. Handle message submission/relaying
+4. Ensure attestation storage compatibility
+
+**Example:**
+```solidity
+contract CustomOracle is BaseInputOracle {
+    function submitProof(
+        uint256 outputChainId,
+        bytes32 intentHash,
+        bytes calldata proof
+    ) external {
+        // Validate proof
+        require(validateProof(proof), "Invalid proof");
+        
+        // Store attestation
+        bytes32 payload = encodePayload(intentHash);
+        _setAttested(outputChainId, payload);
+        
+        emit AttestationSubmitted(outputChainId, payload);
+    }
+    
+    function validateProof(bytes calldata proof) internal returns (bool) {
+        // Custom validation logic
+    }
+}
+```
+
+## Supporting Contracts
+
+### Libraries
+
+#### MandateOutputEncodingLib
+
+**Location**: `src/libs/MandateOutputEncodingLib.sol`
+
+Encoding and decoding utilities for `MandateOutput` structures.
+
+```solidity
+library MandateOutputEncodingLib {
+    function encode(MandateOutput memory output) internal pure returns (bytes memory);
+    function decode(bytes memory data) internal pure returns (MandateOutput memory);
+    function hash(MandateOutput memory output) internal pure returns (bytes32);
+}
+```
+
+#### PayloadLib
+
+**Location**: `src/libs/PayloadLib.sol`
+
+Utilities for creating and validating payloads.
+
+```solidity
+library PayloadLib {
+    function createPayload(
+        bytes32 intentHash,
+        uint256 chainId,
+        MandateOutput[] memory outputs
+    ) internal pure returns (bytes32);
+    
+    function validatePayload(bytes32 payload) internal pure returns (bool);
+}
+```
+
+### Interfaces
+
+#### IAttester
+
+**Location**: `src/interfaces/IAttester.sol`
+
+Core interface for attestation checking.
+
+```solidity
+interface IAttester {
+    function hasAttested(bytes32 payload) external view returns (bool);
+}
+```
+
+#### IPayloadValidator
+
+**Location**: `src/interfaces/IPayloadValidator.sol`
+
+Interface for validating output fills.
+
+```solidity
+interface IPayloadValidator {
+    function hasAttested(bytes32 payload) external view returns (bool);
+    function validateFill(FillData calldata data) external view returns (bool);
+}
+```
+
+## Testing
+
+OIF includes comprehensive tests for all core contracts.
+
+### Test Structure
+
+```
+test/
+├── input/              # InputSettler tests
+├── output/             # OutputSettler tests
+├── oracle/             # Oracle implementation tests
+├── libs/               # Library tests
+├── integration/        # End-to-end integration tests
+└── mocks/              # Mock contracts for testing
+```
+
+### Running Tests
+
+```bash
+# All tests
+forge test
+
+# Specific contract
+forge test --match-contract InputSettlerTest
+
+# Specific test
+forge test --match-test testSubmitIntent
+
+# With verbosity
+forge test -vvv
+```
+
+### Mock Contracts
+
+**Location**: `test/mocks/`
+
+Useful mock implementations for testing:
+- `MockOracle.sol`: Simple oracle for testing
+- `MockERC20.sol`: Test token
+- `MockOutputSettler.sol`: Simplified OutputSettler
+
+## Gas Optimization
+
+### InputSettlerCompact
+
+- Uses Resource Locks: ~30% gas savings vs escrow
+- Compact encoding: Reduced calldata costs
+- Batch operations: Amortized overhead
+
+### Best Practices
+
+1. **Batch Operations**: Submit multiple intents in one transaction
+2. **Optimal Data Structures**: Use compact encoding when possible
+3. **Early Validation**: Fail fast to save gas on invalid inputs
+4. **View Functions**: Use for pre-flight checks before transactions
+
+## Security Best Practices
+
+### For Developers
+
+1. **Validate All Inputs**: Never trust user-provided data
+2. **Check Oracle Attestations**: Always verify before releasing assets
+3. **Handle Reentrancy**: Use checks-effects-interactions pattern
+4. **Test Edge Cases**: Cover expiry, cancellation, partial fills
+5. **Audit External Calls**: Be cautious with callback data
+
+### For Integrators
+
+1. **Use Latest Audited Versions**: Stay updated with security patches
+2. **Test Thoroughly**: Run comprehensive integration tests
+3. **Monitor Events**: Watch for unexpected behavior
+4. **Set Reasonable Timeouts**: Balance UX with security
+5. **Handle Failures Gracefully**: Implement refund mechanisms
+
+## Upgradeability
+
+OIF contracts are designed to be:
+- **Immutable Core**: Core logic is fixed for security
+- **Modular Extensions**: Add new features via separate contracts
+- **Composable**: New Settlers work with existing infrastructure
+
+### Adding New Settlers
+
+To add a new InputSettler or OutputSettler:
+
+1. Implement required interfaces
+2. Ensure compatibility with existing oracles
+3. Use standard encoding formats
+4. Test with existing solvers
+5. Deploy independently
+
+## Next Steps
+
+- **Deploy Contracts**: Follow the [Deployment Guide](/docs/smart-contracts/deployment)
+- **Integrate with Solvers**: See [Solver Documentation](/docs/solvers)
+- **Build Custom Settlers**: Review interface requirements and examples
+- **Explore Examples**: Check contract examples in `examples/` directory
+
+## Additional Resources
+
+- [OpenZeppelin Contracts](https://docs.openzeppelin.com/contracts/)
+- [Foundry Book](https://book.getfoundry.sh/)
+- [EIP-7683 Specification](https://eips.ethereum.org/EIPS/eip-7683)
+- [Solidity Documentation](https://docs.soliditylang.org/)
+

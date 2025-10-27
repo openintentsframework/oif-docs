@@ -1,0 +1,579 @@
+---
+title: API Examples
+description: Complete code examples for integrating with OIF APIs
+---
+
+# API Examples
+
+This page provides complete, production-ready examples for integrating with OIF APIs in multiple programming languages.
+
+## TypeScript/JavaScript
+
+### Complete Integration Example
+
+```typescript
+import { ethers } from 'ethers';
+
+interface QuoteRequest {
+  user: string;
+  intent: {
+    intentType: 'oif-swap';
+    inputs: Input[];
+    outputs: Output[];
+  };
+  swapType?: 'exact-input' | 'exact-output';
+}
+
+interface Input {
+  user: string;
+  asset: string;
+  amount?: string;
+  lock?: {
+    kind: 'the-compact' | 'rhinestone';
+    params?: Record<string, unknown>;
+  };
+}
+
+interface Output {
+  receiver: string;
+  asset: string;
+  amount?: string;
+  calldata?: string;
+}
+
+class OIFClient {
+  constructor(
+    private baseUrl: string,
+    private signer: ethers.Signer
+  ) {}
+
+  // Request quotes from multiple solvers
+  async getQuotes(request: QuoteRequest) {
+    const response = await fetch(`${this.baseUrl}/v1/quotes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Failed to get quotes: ${error.message}`);
+    }
+
+    return response.json();
+  }
+
+  // Sign a quote for submission
+  async signQuote(quote: any): Promise<string> {
+    const message = ethers.utils.keccak256(
+      ethers.utils.defaultAbiCoder.encode(
+        ['string', 'string', 'uint256'],
+        [quote.quoteId, await this.signer.getAddress(), quote.expiresAt]
+      )
+    );
+
+    return this.signer.signMessage(ethers.utils.arrayify(message));
+  }
+
+  // Submit signed order
+  async submitOrder(quoteId: string, signature: string, userAddress: string) {
+    const response = await fetch(`${this.baseUrl}/v1/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quoteId, signature, userAddress })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Failed to submit order: ${error.message}`);
+    }
+
+    return response.json();
+  }
+
+  // Poll order status until completion
+  async waitForCompletion(orderId: string, maxWaitSeconds = 300): Promise<any> {
+    const startTime = Date.now();
+
+    while ((Date.now() - startTime) / 1000 < maxWaitSeconds) {
+      const response = await fetch(`${this.baseUrl}/v1/orders/${orderId}`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to get order status`);
+      }
+
+      const order = await response.json();
+
+      if (order.status === 'completed') {
+        return order;
+      }
+
+      if (order.status === 'failed' || order.status === 'expired') {
+        throw new Error(`Order ${order.status}: ${order.error || 'Unknown error'}`);
+      }
+
+      // Wait 5 seconds before next poll
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+
+    throw new Error('Order execution timeout');
+  }
+
+  // Complete workflow: Get quotes, submit order, wait for completion
+  async executeSwap(request: QuoteRequest) {
+    // 1. Get quotes
+    console.log('Requesting quotes...');
+    const quotesResponse = await this.getQuotes(request);
+
+    if (quotesResponse.totalQuotes === 0) {
+      throw new Error('No quotes available');
+    }
+
+    // 2. Select best quote
+    const bestQuote = quotesResponse.quotes[0]; // First quote (or implement selection logic)
+    console.log(`Selected quote ${bestQuote.quoteId} from solver ${bestQuote.solverId}`);
+
+    // 3. Verify quote not expired
+    const now = Math.floor(Date.now() / 1000);
+    if (bestQuote.expiresAt < now) {
+      throw new Error('Quote expired before submission');
+    }
+
+    // 4. Sign quote
+    console.log('Signing quote...');
+    const signature = await this.signQuote(bestQuote);
+
+    // 5. Submit order
+    console.log('Submitting order...');
+    const order = await this.submitOrder(
+      bestQuote.quoteId,
+      signature,
+      request.user
+    );
+
+    console.log(`Order submitted: ${order.orderId}`);
+
+    // 6. Wait for completion
+    console.log('Waiting for execution...');
+    const completedOrder = await this.waitForCompletion(order.orderId);
+
+    console.log(`Order completed! Fill TX: ${completedOrder.fillTxHash}`);
+    return completedOrder;
+  }
+}
+
+// Usage Example
+async function main() {
+  const provider = new ethers.providers.JsonRpcProvider('https://eth.llamarpc.com');
+  const signer = new ethers.Wallet(process.env.PRIVATE_KEY!, provider);
+  const client = new OIFClient('http://localhost:3000', signer);
+
+  const request: QuoteRequest = {
+    user: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+    intent: {
+      intentType: 'oif-swap',
+      inputs: [{
+        user: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+        asset: '0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+        amount: '1000000000', // 1000 USDC
+        lock: {
+          kind: 'the-compact'
+        }
+      }],
+      outputs: [{
+        receiver: '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+        asset: '0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' // WETH
+      }]
+    },
+    swapType: 'exact-input'
+  };
+
+  try {
+    const order = await client.executeSwap(request);
+    console.log('Swap completed successfully!', order);
+  } catch (error) {
+    console.error('Swap failed:', error);
+  }
+}
+
+main();
+```
+
+## Python
+
+### Complete Integration Example
+
+```python
+import requests
+import time
+from typing import Dict, Any, List, Optional
+from eth_account import Account
+from eth_account.messages import encode_defunct
+from web3 import Web3
+
+class OIFClient:
+    def __init__(self, base_url: str, private_key: str):
+        self.base_url = base_url
+        self.account = Account.from_key(private_key)
+        self.w3 = Web3()
+
+    def get_quotes(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Request quotes from multiple solvers"""
+        response = requests.post(
+            f'{self.base_url}/v1/quotes',
+            json=request,
+            headers={'Content-Type': 'application/json'}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def sign_quote(self, quote: Dict[str, Any]) -> str:
+        """Sign a quote for submission"""
+        # Create message hash
+        message_hash = self.w3.solidityKeccak(
+            ['string', 'string', 'uint256'],
+            [quote['quoteId'], self.account.address, quote['expiresAt']]
+        )
+        
+        # Sign message
+        message = encode_defunct(message_hash)
+        signed = self.account.sign_message(message)
+        return signed.signature.hex()
+
+    def submit_order(
+        self, 
+        quote_id: str, 
+        signature: str, 
+        user_address: str
+    ) -> Dict[str, Any]:
+        """Submit signed order"""
+        response = requests.post(
+            f'{self.base_url}/v1/orders',
+            json={
+                'quoteId': quote_id,
+                'signature': signature,
+                'userAddress': user_address
+            },
+            headers={'Content-Type': 'application/json'}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_order(self, order_id: str) -> Dict[str, Any]:
+        """Get order status"""
+        response = requests.get(f'{self.base_url}/v1/orders/{order_id}')
+        response.raise_for_status()
+        return response.json()
+
+    def wait_for_completion(
+        self, 
+        order_id: str, 
+        max_wait_seconds: int = 300
+    ) -> Dict[str, Any]:
+        """Poll order status until completion"""
+        start_time = time.time()
+
+        while (time.time() - start_time) < max_wait_seconds:
+            order = self.get_order(order_id)
+
+            if order['status'] == 'completed':
+                return order
+
+            if order['status'] in ['failed', 'expired']:
+                raise Exception(f"Order {order['status']}")
+
+            time.sleep(5)
+
+        raise TimeoutError('Order execution timeout')
+
+    def execute_swap(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Complete swap workflow"""
+        # 1. Get quotes
+        print('Requesting quotes...')
+        quotes_response = self.get_quotes(request)
+
+        if quotes_response['totalQuotes'] == 0:
+            raise Exception('No quotes available')
+
+        # 2. Select best quote
+        best_quote = quotes_response['quotes'][0]
+        print(f"Selected quote {best_quote['quoteId']}")
+
+        # 3. Verify quote not expired
+        if best_quote['expiresAt'] < time.time():
+            raise Exception('Quote expired')
+
+        # 4. Sign quote
+        print('Signing quote...')
+        signature = self.sign_quote(best_quote)
+
+        # 5. Submit order
+        print('Submitting order...')
+        order = self.submit_order(
+            best_quote['quoteId'],
+            signature,
+            request['user']
+        )
+
+        print(f"Order submitted: {order['orderId']}")
+
+        # 6. Wait for completion
+        print('Waiting for execution...')
+        completed_order = self.wait_for_completion(order['orderId'])
+
+        print(f"Order completed! Fill TX: {completed_order['fillTxHash']}")
+        return completed_order
+
+# Usage Example
+def main():
+    client = OIFClient(
+        base_url='http://localhost:3000',
+        private_key='0x...'  # Your private key
+    )
+
+    request = {
+        'user': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+        'intent': {
+            'intentType': 'oif-swap',
+            'inputs': [{
+                'user': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+                'asset': '0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+                'amount': '1000000000',
+                'lock': {
+                    'kind': 'the-compact'
+                }
+            }],
+            'outputs': [{
+                'receiver': '0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045',
+                'asset': '0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
+            }]
+        },
+        'swapType': 'exact-input'
+    }
+
+    try:
+        order = client.execute_swap(request)
+        print('Swap completed successfully!', order)
+    except Exception as e:
+        print(f'Swap failed: {e}')
+
+if __name__ == '__main__':
+    main()
+```
+
+## Rust
+
+### Complete Integration Example
+
+```rust
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::time::sleep;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct QuoteRequest {
+    user: String,
+    intent: Intent,
+    #[serde(rename = "swapType")]
+    swap_type: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Intent {
+    #[serde(rename = "intentType")]
+    intent_type: String,
+    inputs: Vec<Input>,
+    outputs: Vec<Output>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Input {
+    user: String,
+    asset: String,
+    amount: Option<String>,
+    lock: Option<Lock>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Output {
+    receiver: String,
+    asset: String,
+    amount: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Lock {
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuotesResponse {
+    quotes: Vec<Quote>,
+    #[serde(rename = "totalQuotes")]
+    total_quotes: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct Quote {
+    #[serde(rename = "quoteId")]
+    quote_id: String,
+    #[serde(rename = "solverId")]
+    solver_id: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct OrderRequest {
+    #[serde(rename = "quoteId")]
+    quote_id: String,
+    signature: String,
+    #[serde(rename = "userAddress")]
+    user_address: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Order {
+    #[serde(rename = "orderId")]
+    order_id: String,
+    status: String,
+}
+
+struct OIFClient {
+    base_url: String,
+    client: Client,
+}
+
+impl OIFClient {
+    fn new(base_url: String) -> Self {
+        Self {
+            base_url,
+            client: Client::new(),
+        }
+    }
+
+    async fn get_quotes(&self, request: &QuoteRequest) -> Result<QuotesResponse, Box<dyn std::error::Error>> {
+        let response = self.client
+            .post(format!("{}/v1/quotes", self.base_url))
+            .json(request)
+            .send()
+            .await?
+            .json::<QuotesResponse>()
+            .await?;
+
+        Ok(response)
+    }
+
+    async fn submit_order(&self, request: &OrderRequest) -> Result<Order, Box<dyn std::error::Error>> {
+        let response = self.client
+            .post(format!("{}/v1/orders", self.base_url))
+            .json(request)
+            .send()
+            .await?
+            .json::<Order>()
+            .await?;
+
+        Ok(response)
+    }
+
+    async fn get_order(&self, order_id: &str) -> Result<Order, Box<dyn std::error::Error>> {
+        let response = self.client
+            .get(format!("{}/v1/orders/{}", self.base_url, order_id))
+            .send()
+            .await?
+            .json::<Order>()
+            .await?;
+
+        Ok(response)
+    }
+
+    async fn wait_for_completion(&self, order_id: &str, max_wait_seconds: u64) -> Result<Order, Box<dyn std::error::Error>> {
+        let start = std::time::Instant::now();
+
+        loop {
+            let order = self.get_order(order_id).await?;
+
+            if order.status == "completed" {
+                return Ok(order);
+            }
+
+            if order.status == "failed" || order.status == "expired" {
+                return Err(format!("Order {}", order.status).into());
+            }
+
+            if start.elapsed().as_secs() > max_wait_seconds {
+                return Err("Order execution timeout".into());
+            }
+
+            sleep(Duration::from_secs(5)).await;
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = OIFClient::new("http://localhost:3000".to_string());
+
+    let request = QuoteRequest {
+        user: "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045".to_string(),
+        intent: Intent {
+            intent_type: "oif-swap".to_string(),
+            inputs: vec![Input {
+                user: "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045".to_string(),
+                asset: "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".to_string(),
+                amount: Some("1000000000".to_string()),
+                lock: Some(Lock {
+                    kind: "the-compact".to_string(),
+                }),
+            }],
+            outputs: vec![Output {
+                receiver: "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045".to_string(),
+                asset: "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string(),
+                amount: None,
+            }],
+        },
+        swap_type: Some("exact-input".to_string()),
+    };
+
+    // Get quotes
+    println!("Requesting quotes...");
+    let quotes = client.get_quotes(&request).await?;
+
+    if quotes.total_quotes == 0 {
+        return Err("No quotes available".into());
+    }
+
+    let best_quote = &quotes.quotes[0];
+    println!("Selected quote {}", best_quote.quote_id);
+
+    // Sign quote (implement signing logic)
+    let signature = "0x...".to_string(); // Your signature
+
+    // Submit order
+    println!("Submitting order...");
+    let order = client.submit_order(&OrderRequest {
+        quote_id: best_quote.quote_id.clone(),
+        signature,
+        user_address: request.user.clone(),
+    }).await?;
+
+    println!("Order submitted: {}", order.order_id);
+
+    // Wait for completion
+    println!("Waiting for execution...");
+    let completed = client.wait_for_completion(&order.order_id, 300).await?;
+
+    println!("Order completed: {:?}", completed);
+
+    Ok(())
+}
+```
+
+## Next Steps
+
+- Review [Quote API](/docs/apis/quote-api) for detailed endpoint documentation
+- See [Order API](/docs/apis/order-api) for order submission details
+- Check [Error Handling](/docs/apis/errors) for production error handling
+- Read [Integration Guide](/docs/integration/overview) for complete integration
+

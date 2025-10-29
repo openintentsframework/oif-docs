@@ -39,7 +39,7 @@ The build process will compile:
 
 ```bash
 # Run the test suite to ensure everything is working
-cargo test
+cargo test --workspace
 ```
 
 ## Environment Variables
@@ -289,16 +289,15 @@ Ensure your solver and user accounts have both testnet ETH and USDC on both chai
 
 ```bash
 # Check your account balances
-cargo run --bin solver-demo -- account balance all
-
-# Check USDC balances specifically
-cargo run --bin solver-demo -- token balance all
+cargo run --bin solver-demo -- token balance
 ```
 
 Use the faucets to fund your accounts. You'll need:
 
 - **ETH**: For gas fees on both chains
 - **USDC**: For testing cross-chain swaps
+
+> **Note**: If you plan to use Permit2, make sure you grant the correct token transfer approval before testing.
 
 ### 4. Contract Configuration
 
@@ -315,23 +314,7 @@ forge create path-to-Contract.sol:Contract \
     --broadcast
 ```
 
-### 5. Setup Permissions
-
-Configure necessary approvals for USDC transfers:
-
-```bash
-# Set up approvals and permissions
-cargo run --bin solver-demo -- env setup
-```
-
-This will:
-
-- Approve Permit2 for USDC transfers
-- Register allocators with TheCompact if using compact settlement
-- Validate contract deployments
-- Ensure accounts have proper permissions
-
-### 6. Start the Solver
+### 5. Start the Solver
 
 In a new terminal window, start the solver:
 
@@ -349,7 +332,7 @@ You should see output indicating the solver has started and is monitoring the te
 [INFO] Solver ready and monitoring for intents
 ```
 
-### 7. Test Cross-Chain Intent Execution
+### 6. Test Cross-Chain Intent Execution
 
 In another terminal, test a cross-chain USDC transfer:
 
@@ -376,7 +359,7 @@ cargo run --bin solver-demo -- intent submit .oif-demo/requests/post_order.req.j
 
 **Note**: Testnet execution will be slower than local due to actual block times and cross-chain messaging delays.
 
-### 8. Monitor Results
+### 7. Monitor Results
 
 Check the execution progress:
 
@@ -385,7 +368,7 @@ Check the execution progress:
 cargo run --bin solver-demo -- intent status <order_id>
 
 # Check USDC balances after execution
-cargo run --bin solver-demo -- token balance all
+cargo run --bin solver-demo -- token balance
 ```
 
 ### Testnet Considerations

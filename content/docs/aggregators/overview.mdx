@@ -10,6 +10,7 @@ The OIF Aggregator is a high-performance service for aggregating quotes from mul
 ## What is the OIF Aggregator?
 
 The OIF Aggregator acts as a central hub that:
+
 - **Aggregates Quotes**: Fetches and compares quotes from multiple solvers concurrently
 - **Routes Orders**: Directs user intents to the best-performing solvers
 - **Tracks Execution**: Monitors order status from submission to settlement
@@ -53,7 +54,7 @@ graph TB
         DApp[DApps]
         Protocol[Protocols]
     end
-    
+
     subgraph "OIF Aggregator"
         API[REST API Layer]
         Auth[Authentication]
@@ -62,24 +63,24 @@ graph TB
         CircuitBreaker[Circuit Breaker]
         Storage[Storage Backend]
     end
-    
+
     subgraph "Solvers"
         Solver1[Solver 1]
         Solver2[Solver 2]
         Solver3[Solver 3]
     end
-    
+
     Wallet --> API
     DApp --> API
     Protocol --> API
-    
+
     API --> Auth
     Auth --> QuoteAgg
     Auth --> OrderMgr
-    
+
     QuoteAgg --> CircuitBreaker
     OrderMgr --> Storage
-    
+
     CircuitBreaker --> Solver1
     CircuitBreaker --> Solver2
     CircuitBreaker --> Solver3
@@ -88,31 +89,37 @@ graph TB
 ### Component Breakdown
 
 #### REST API Layer
+
 - Exposes HTTP/JSON endpoints for client integration
 - Handles request validation and response formatting
 - Provides OpenAPI/Swagger documentation (optional feature)
 
 #### Authentication System
+
 - API key management and validation
 - Request signing and verification
 - Rate limiting per client/IP
 
 #### Quote Aggregator
+
 - Parallel quote requests to multiple solvers
 - Response collection and ranking
 - Timeout management and error handling
 
 #### Circuit Breaker
+
 - Monitors solver health and success rates
 - Automatically disables failing solvers
 - Implements exponential backoff for recovery
 
 #### Order Manager
+
 - Tracks order lifecycle from submission to settlement
 - Routes orders to selected solvers
 - Provides status updates and history
 
 #### Storage Backend
+
 - In-memory storage for orders and solver state
 - Pluggable architecture for custom storage implementations
 - Fast access with minimal overhead
@@ -142,6 +149,7 @@ See the [API Reference](/docs/apis) for detailed documentation on request/respon
 ### For Wallet Developers
 
 Integrate the aggregator to offer users:
+
 - **Best Execution**: Compare prices across multiple solvers automatically
 - **Seamless UX**: Simple REST API eliminates complexity
 - **Real-Time Quotes**: Fast quote aggregation with configurable timeouts
@@ -150,6 +158,7 @@ Integrate the aggregator to offer users:
 ### For Protocol Teams
 
 Deploy a custom aggregator to:
+
 - **Control Solver Set**: Choose which solvers to include
 - **Custom Routing**: Implement protocol-specific selection logic
 - **Privacy**: Keep transaction data within your infrastructure
@@ -158,6 +167,7 @@ Deploy a custom aggregator to:
 ### For DApp Builders
 
 Use the aggregator to:
+
 - **Add Cross-Chain**: Power cross-chain swaps without custom infrastructure
 - **Reduce Complexity**: Single API instead of multiple solver integrations
 - **Save Time**: Pre-built solution vs building from scratch
@@ -226,6 +236,7 @@ See [Configuration Guide](/docs/aggregators/configuration) for complete details.
 The aggregator monitors solver health and automatically disables failing solvers:
 
 ### Health Metrics
+
 - Success rate (successful quotes / total requests)
 - Average response time
 - Recent error count
@@ -238,6 +249,7 @@ The aggregator monitors solver health and automatically disables failing solvers
 3. **Half-Open** (Recovery): Testing if solver has recovered
 
 ### Recovery Strategy
+
 - Exponential backoff between retry attempts
 - Automatic re-enabling after recovery confirmation
 - Configurable failure thresholds and backoff parameters
@@ -245,16 +257,19 @@ The aggregator monitors solver health and automatically disables failing solvers
 ## Security Considerations
 
 ### Quote Integrity
+
 - All quotes include HMAC-SHA256 checksums
 - Prevents tampering during transmission
 - Verifiable by end users
 
 ### Authentication
+
 - Optional API key authentication
 - Per-client rate limiting
 - IP-based restrictions
 
 ### Input Validation
+
 - Strict request schema validation
 - Address format verification (EIP-7930)
 - Amount and timing sanity checks
@@ -262,18 +277,21 @@ The aggregator monitors solver health and automatically disables failing solvers
 ## Deployment Options
 
 ### Standalone Binary
+
 ```bash
 cargo build --release
 ./target/release/oif-aggregator
 ```
 
 ### Docker Container
+
 ```bash
 docker build -t oif-aggregator .
-docker run -p 3000:3000 -v ./config.json:/config.json oif-aggregator
+docker run -p 4000:4000 -e INTEGRITY_SECRET=your-secret-here oif-aggregator
 ```
 
 ### Cloud Deployment
+
 - Compatible with any cloud provider
 - Stateless design enables horizontal scaling
 - Health endpoint for load balancer checks
@@ -283,25 +301,45 @@ See [Deployment Guide](/docs/aggregators/quickstart) for detailed instructions.
 ## Monitoring & Observability
 
 ### Structured Logging
+
+Inside `config.json` file you can change the way we show the logs inside terminal:
+
 ```bash
 # JSON format for machine parsing
-RUST_LOG=info ./oif-aggregator --log-format json
+"logging": {
+    "level": "debug",
+    "format": "compact",
+    "structured": false
+},
 
 # Pretty format for human reading
-RUST_LOG=info ./oif-aggregator --log-format pretty
+"logging": {
+    "level": "debug",
+    "format": "pretty",
+    "structured": false
+},
+```
+
+Then you can see the logs by running:
+
+```bash
+RUST_LOG=info ./target/release/oif-aggregator
 ```
 
 ### Health Checks
+
 ```bash
 curl http://localhost:3000/health
 ```
 
 Response includes:
+
 - Service status
 - Solver health metrics
 - Storage statistics
 
 ### Metrics (Coming Soon)
+
 - Prometheus endpoint for metrics export
 - Request rates and latencies
 - Solver performance statistics

@@ -372,38 +372,11 @@ Proof-of-event validation using Polymer’s CrossL2 prover. No cross-chain messa
 
 ---
 
-### Bitcoin Oracle
-
-Locations:
-
-- Core: `src/integrations/oracles/bitcoin/BitcoinOracle.sol`
-- Citrea adapter: `src/integrations/oracles/bitcoin/CitreaOracle.sol`
-
-Native Bitcoin verification using a local light client. Can be used directly as an output settler or indirectly via a bridge-style oracle.
-
-- **Features**
-  - Inclusion proofs verified against a light client (`_getBlockHash`, `_getLatestBlockHeight`)
-  - Output script matching and optional OP_RETURN data validation
-  - Optimistic claim/dispute/finalization flow with collateral
-  - `BITCOIN_AS_TOKEN` encoding for confirmations and address type
-
-- **Key methods**
-  - Settlement lifecycle: `claim(...)`, `dispute(...)`, and finalization paths (see events like `OutputClaimed`, `OutputDisputed`, `OutputDisputeFinalised`).
-  - Core validation: proof checks against block headers and script comparison; enforces minimum confirmations.
-
-- **Configuration**
-  - Provide a light client address in constructor; adapters like `CitreaOracle` override `_getLatestBlockHeight` and `_getBlockHash`.
-  - Encode orders with `BITCOIN_AS_TOKEN` (includes confirmations and address type).
-  - Configure collateral token and multiplier for the optimistic dispute mechanism.
-
----
-
 ### Quick comparison
 
 - **Wormhole**: Guardian-verified VAAs, fee via `messageFee()`, requires chain ID mapping.
 - **Hyperlane**: ISM-based security, flexible hooks, gas quoting, domain IDs used directly.
 - **Polymer**: No cross-chain messages; validates L2 event proofs via prover; optional chain ID mapping.
-- **Bitcoin**: Native BTC proof verification; light client required; optimistic dispute flow with collateral.
 
 ## Testing
 

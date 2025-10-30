@@ -131,75 +131,6 @@ Deploy to your local node:
 forge script script/Deploy.sol --rpc-url http://127.0.0.1:8545 --broadcast --private-key <ANVIL_PRIVATE_KEY>
 ```
 
-## Testing an Intent Flow
-
-### 1. Setup Token Approvals
-
-Before submitting an intent, approve the InputSettler to spend your input tokens:
-
-```solidity
-// For ERC-20 tokens
-token.approve(address(inputSettler), amount);
-
-// For Permit2 (used with Compact)
-permit2.approve(tokenAddress, address(inputSettler), amount, expiration);
-```
-
-Foundry command to execute approve for ERC20 tokens:
-
-```bash
- cast send TOKEN_ADDRESS "approve(address,uint256)" \
- SPENDER_ADDRESS \
- AMOUNT \
- --rpc-url http://127.0.0.1:8545 \
- --private-key  <ANVIL_PRIVATE_KEY>
-```
-
-### 2. Create and Submit an Intent
-
-```solidity
-// Define intent parameters
-Intent memory intent = Intent({
-    sponsor: msg.sender,
-    outputs: outputs,  // Array of desired outputs
-    inputs: inputs,    // Array of inputs to lock
-    fillDeadline: block.timestamp + 1 hours,
-    expiry: block.timestamp + 24 hours
-});
-
-// Submit to InputSettler
-bytes32 intentHash = inputSettler.submitIntent(intent);
-```
-
-### 3. Fill Outputs (Solver Action)
-
-On the output chain, a solver fills the outputs:
-
-```solidity
-// Solver approves tokens
-outputToken.approve(address(outputSettler), outputAmount);
-
-// Fill the output
-outputSettler.fillOutput(
-    intentHash,
-    outputIndex,
-    recipient,
-    amount
-);
-```
-
-### 4. Validate and Claim (Solver Action)
-
-After filling outputs, the solver validates on the input chain:
-
-```solidity
-// Oracle generates proof
-oracle.submitProof(intentHash, outputChainId, proof);
-
-// Solver claims inputs
-inputSettler.claimInputs(intentHash);
-```
-
 ## Coverage Reports
 
 Generate coverage reports to see test coverage:
@@ -267,10 +198,9 @@ git submodule update --init --recursive
 
 Now that you have contracts deployed locally:
 
-1. **Explore Examples**: Check the `examples/` directory for usage patterns
-2. **Read Contract Documentation**: Review inline documentation in contract files
-3. **Integration Testing**: Try integrating with a local solver instance
-4. **Core Contracts Deep Dive**: Learn about specific implementations in [Core Contracts](/docs/smart-contracts/core-contracts)
+1. **Read Contract Documentation**: Review inline documentation in contract files
+2. **Integration Testing**: Try integrating with a local solver instance
+3. **Core Contracts Deep Dive**: Learn about specific implementations in [Core Contracts](/docs/smart-contracts/core-contracts)
 
 ## Additional Resources
 

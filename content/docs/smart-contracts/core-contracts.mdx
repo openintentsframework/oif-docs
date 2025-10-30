@@ -171,7 +171,7 @@ OutputSettler contracts are deployed on the output (destination) chain and handl
 
 ### OutputSettlerBase
 
-Abstract base that settles outputs on the destination chain for both native and ERC20 tokens. Also serves as an attester for oracle verification. Concrete contracts must implement `\_resolveOutput(...)`.
+Abstract base contract that settles outputs on the destination chain for both native and ERC20 tokens, while serving as an attester for oracle verification. Concrete contracts must implement `_resolveOutput(...)`.
 
 Main implementation for accepting and validating output fills.
 

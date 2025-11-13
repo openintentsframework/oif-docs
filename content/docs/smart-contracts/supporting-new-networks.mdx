@@ -1,0 +1,225 @@
+---
+title: Supporting New Networks for Demos
+description: Guide for deploying OIF contracts to new networks
+---
+
+# Supporting New Networks
+
+This document contains Forge deployment commands for deploying OIF contracts to new networks.
+
+This is an example and uses dummy tokens and allocators. Make sure to use real intended contracts for your deployments
+
+## Prerequisites
+
+Set your private key as an environment variable:
+
+```bash
+export SOLVER_PRIVATE_KEY=your_private_key_here
+```
+
+## Example: Arbitrum Mainnet
+
+### Network Information
+
+- **Chain ID**: 42161
+- **Hyperlane Domain ID**: 42161
+- **Hyperlane Mailbox**: `0x979Ca5202784112f4738403dBec5D0F3B9daabB9`
+- **RPC URL**: `https://arb1.arbitrum.io/rpc`
+- **The Compact**: `0x00000000000000171ede64904551eedf3c6c9788`
+
+---
+
+## Deployment Steps
+
+### 1. Deploy Hyperlane Oracle
+
+```bash
+cd oif-contracts
+forge create \
+  --rpc-url https://arb1.arbitrum.io/rpc \
+  --broadcast \
+  --private-key $SOLVER_PRIVATE_KEY \
+  src/integrations/oracles/hyperlane/HyperlaneOracle.sol:HyperlaneOracle \
+  --constructor-args 0x979Ca5202784112f4738403dBec5D0F3B9daabB9 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000
+```
+
+### 2. Deploy Allocator (AlwaysOKAllocator)
+
+```bash
+cd oif-contracts
+forge create \
+  --rpc-url https://arb1.arbitrum.io/rpc \
+  --broadcast \
+  --private-key $SOLVER_PRIVATE_KEY \
+  lib/the-compact/src/test/AlwaysOKAllocator.sol:AlwaysOKAllocator
+```
+
+### 3. Deploy Compact Settler (InputSettlerCompact)
+
+```bash
+cd oif-contracts
+forge create \
+  --rpc-url https://arb1.arbitrum.io/rpc \
+  --broadcast \
+  --private-key $SOLVER_PRIVATE_KEY \
+  src/input/compact/InputSettlerCompact.sol:InputSettlerCompact \
+  --constructor-args 0x00000000000000171ede64904551eedf3c6c9788
+```
+
+### 4. Deploy Input Settler (InputSettlerEscrow)
+
+```bash
+cd oif-contracts
+forge create \
+  --rpc-url https://arb1.arbitrum.io/rpc \
+  --broadcast \
+  --private-key $SOLVER_PRIVATE_KEY \
+  src/input/escrow/InputSettlerEscrow.sol:InputSettlerEscrow
+```
+
+### 5. Deploy Output Settler (OutputSettlerSimple)
+
+```bash
+cd oif-contracts
+forge create \
+  --rpc-url https://arb1.arbitrum.io/rpc \
+  --broadcast \
+  --private-key $SOLVER_PRIVATE_KEY \
+  src/output/simple/OutputSettlerSimple.sol:OutputSettlerSimple
+
+### 6. Deploy a ERC20 (MockERC20)
+
+```bash
+cd oif-contracts
+forge create \
+  --rpc-url https://arb1.arbitrum.io/rpc \
+  --broadcast \
+  --private-key $SOLVER_PRIVATE_KEY \
+  test/mocks/MockERC20.sol:MockERC20 \
+  --constructor-args "USDC" "USDC" 6
+```
+
+---
+
+## Constructor Arguments Reference
+
+### HyperlaneOracle
+
+- **mailbox**: Hyperlane mailbox contract address
+    - Arbitrum: `0x979Ca5202784112f4738403dBec5D0F3B9daabB9`
+- **customHook**: Custom hook address (using zero address)
+- **ism**: ISM contract address (using zero address)
+
+### AlwaysOKAllocator
+
+- No constructor arguments
+
+### InputSettlerCompact
+
+- **compact**: The Compact contract address
+    - Most chains: `0x00000000000000171ede64904551eedf3c6c9788`
+
+### InputSettlerEscrow
+
+- No constructor arguments
+
+### OutputSettlerSimple
+
+- No constructor arguments
+
+---
+
+## Post-Deployment Steps
+
+After deploying contracts, you may need to:
+
+1. **Register the Allocator with The Compact** (if using InputSettlerCompact)
+    
+    ```bash
+    cast send 0x00000000000000171ede64904551eedf3c6c9788 \
+      "__registerAllocator(address,bytes)" \
+      <ALLOCATOR_ADDRESS> \
+      0x \
+      --rpc-url <RPC_URL> \
+      --private-key $SOLVER_PRIVATE_KEY
+    ```
+    
+2. **Update configuration files** with deployed addresses
+    1. `/config/mainnet.toml`
+    2. `/config/mainnet/networks.toml`
+
+---
+
+## Generating Standard Input JSON for Verification
+
+To generate the complete standard input JSON file for verification (includes sources, settings, etc.):
+
+### Hyperlane Oracle on Optimism
+
+```bash
+cd oif-contracts
+forge verify-contract \
+  --show-standard-json-input \
+  <DEPLOYED_ADDRESS> \
+  src/integrations/oracles/hyperlane/HyperlaneOracle.sol:HyperlaneOracle \
+  --constructor-args $(cast abi-encode "constructor(address,address,address)" 0x979Ca5202784112f4738403dBec5D0F3B9daabB9 0x0000000000000000000000000000000000000000 0x0000000000000000000000000000000000000000) \
+  > hyperlane-oracle-optimism-input.json
+```
+
+### InputSettlerCompact on Base
+
+```bash
+cd oif-contracts
+forge verify-contract \
+  --show-standard-json-input \
+  <DEPLOYED_ADDRESS> \
+  src/input/compact/InputSettlerCompact.sol:InputSettlerCompact \
+  --constructor-args $(cast abi-encode "constructor(address)" 0x00000000000000171ede64904551eedf3c6c9788) \
+  > input-settler-compact-base-input.json
+```
+
+### Contracts with No Constructor Arguments
+
+```bash
+cd oif-contracts
+
+# Example: AlwaysOKAllocator
+forge verify-contract \
+  --show-standard-json-input \
+  <DEPLOYED_ADDRESS> \
+  lib/the-compact/src/test/AlwaysOKAllocator.sol:AlwaysOKAllocator \
+  > allocator-input.json
+
+# Example: InputSettlerEscrow
+forge verify-contract \
+  --show-standard-json-input \
+  <DEPLOYED_ADDRESS> \
+  src/input/escrow/InputSettlerEscrow.sol:InputSettlerEscrow \
+  > input-settler-escrow-input.json
+
+# Example: OutputSettlerSimple
+forge verify-contract \
+  --show-standard-json-input \
+  <DEPLOYED_ADDRESS> \
+  src/output/simple/OutputSettlerSimple.sol:OutputSettlerSimple \
+  > output-settler-simple-input.json
+  
+# Example: MockERC20
+forge verify-contract \                                      
+  --show-standard-json-input \
+  0xc0b782920B2DE8b55f08FC98004Eb5c7d4fBf287 \
+  test/mocks/MockERC20.sol:MockERC20 \
+  --constructor-args $(cast abi-encode "constructor(string,string,uint8)" "USDC" "USDC" 6) \
+  > mock-erc20-input.json
+```
+
+---
+
+## References
+
+- [Hyperlane Mailbox Addresses](https://docs.hyperlane.xyz/docs/reference/addresses/deployments/mailbox)
+- [Hyperlane IGP Addresses](https://docs.hyperlane.xyz/docs/reference/addresses/deployments/interchainGasPaymaster)
+- [The Compact Documentation](https://github.com/Uniswap/the-compact)
+- [Foundry Verification Guide](https://book.getfoundry.sh/reference/forge/forge-verify-contract)
+
+

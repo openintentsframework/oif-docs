@@ -4,7 +4,8 @@
     "overview",
     "quickstart",
     "core-contracts",
-    "deployment"
+    "deployment",
+    "supporting-new-networks"
   ]
 }
 

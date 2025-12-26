@@ -25,11 +25,17 @@ GET /v1/orders/:id
 
 ```typescript
 {
-  quoteId: string;           // Quote ID from /v1/quotes
-  signature: string;         // User's signature (0x-prefixed hex)
-  userAddress: Address;      // User's address (EIP-7930 format)
+  order: Order;              // The order object from the quote response
+  signature: Hex;            // EIP-712 signature (hex string in JSON)
+  quoteId?: string;          // Optional quote ID for tracking
+  originSubmission?: {       // Optional submission preference
+    mode: "user" | "protocol";
+    schemes?: Array<"erc-4337" | "permit2" | "erc20-permit" | "eip-3009">;
+  };
 }
 ```
+
+The `order` field contains the complete order object from the quote response, including EIP-712 typed data that the user signs.
 
 ### Example Request
 
@@ -38,8 +44,17 @@ curl -X POST http://localhost:3000/v1/orders \
   -H "Content-Type: application/json" \
   -d '{
     "quoteId": "quote_abc123xyz",
+    "order": {
+      "type": "oif-escrow-v0",
+      "payload": {
+        "signatureType": "eip712",
+        "domain": { ... },
+        "primaryType": "PermitBatchWitnessTransferFrom",
+        "types": { ... },
+        "message": { ... }
+      }
+    },
     "signature": "0x1234567890abcdef...",
-    "userAddress": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045"
   }'
 ```
 
@@ -48,26 +63,15 @@ curl -X POST http://localhost:3000/v1/orders \
 ```json
 {
   "orderId": "order_xyz789",
-  "status": "pending",
-  "quoteId": "quote_abc123xyz",
-  "solverId": "solver-1",
-  "userAddress": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
-  "inputs": [{
-    "user": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
-    "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    "amount": "1000000000"
-  }],
-  "outputs": [{
-    "receiver": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
-    "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    "amount": "400000000000000000"
-  }],
-  "createdAt": 1703123456,
-  "expiresAt": 1703123756,
-  "fillTxHash": null,
-  "claimTxHash": null
+  "status": "received",
+  "message": "Order accepted for processing"
 }
 ```
+
+The `status` field can be:
+- `"received"`: Order accepted and queued for processing
+- `"rejected"`: Order failed validation (bad signature, expired, etc.)
+- `"error"`: Unexpected server error
 
 ### Error Responses
 
@@ -116,23 +120,24 @@ curl http://localhost:3000/v1/orders/order_xyz789
 
 ```json
 {
-  "orderId": "order_xyz789",
-  "status": "filled",
-  "quoteId": "quote_abc123xyz",
-  "solverId": "solver-1",
-  "userAddress": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045",
-  "inputs": [...],
-  "outputs": [...],
+  "id": "order_xyz789",
+  "status": "settled",
   "createdAt": 1703123456,
-  "expiresAt": 1703123756,
-  "fillTxHash": "0xabc123...",
-  "claimTxHash": "0xdef456...",
-  "executionDetails": {
-    "filledAt": 1703123486,
-    "claimedAt": 1703123516,
-    "gasUsed": "150000",
-    "totalDuration": 60
-  }
+  "updatedAt": 1703123516,
+  "quoteId": "quote_abc123xyz",
+  "inputAmounts": [{
+    "asset": "0x000100000101A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "amount": "1000000000"
+  }],
+  "outputAmounts": [{
+    "asset": "0x000100000101C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "amount": "400000000000000000"
+  }],
+  "settlement": {
+    "type": "escrow",
+    "data": { ... }
+  },
+  "fillTransaction": { ... }
 }
 ```
 
@@ -150,60 +155,75 @@ curl http://localhost:3000/v1/orders/order_xyz789
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending: Order submitted
-    pending --> filling: Solver starts filling
-    filling --> filled: Outputs delivered
-    filled --> claiming: Solver claims inputs
-    claiming --> completed: Inputs transferred
-    
-    pending --> expired: Time limit reached
-    filling --> failed: Fill transaction failed
-    filled --> failed: Claim transaction failed
-    
+    [*] --> created: Order submitted
+    created --> pending: Validation passed
+    pending --> executing: Execution started
+    executing --> executed: Transactions submitted
+    executed --> settling: Settlement started
+    settling --> settled: Assets available
+    settled --> finalized: Claims confirmed
+
+    pending --> failed: Execution failed
+    executing --> failed: Transaction failed
+    settled --> refunded: Refund processed
+
     failed --> [*]
-    expired --> [*]
-    completed --> [*]
+    refunded --> [*]
+    finalized --> [*]
 ```
 
 ## Order Statuses
 
 | Status | Description | Next Steps |
 |--------|-------------|------------|
-| `pending` | Order created, awaiting execution | Wait for solver to begin |
-| `filling` | Solver delivering outputs | Monitor fill transaction |
-| `filled` | Outputs delivered successfully | Solver will claim inputs |
-| `claiming` | Solver claiming input assets | Monitor claim transaction |
-| `completed` | Fully executed successfully | No action needed |
+| `created` | Order created, not yet validated | Wait for validation |
+| `pending` | Order validated, awaiting execution | Wait for solver to begin |
+| `executing` | Transactions being submitted | Monitor execution |
+| `executed` | Transactions submitted to blockchain | Wait for settlement |
+| `settling` | Settlement in progress | Monitor settlement |
+| `settled` | Assets available for claiming | Wait for finalization |
+| `finalized` | Order complete, all claims confirmed | No action needed |
 | `failed` | Execution failed | Check error, may retry |
-| `expired` | Expired before execution | Refund initiated |
+| `refunded` | Order failed and inputs refunded | No action needed |
 
 ## Response Fields
 
-### Order Object
+### POST /v1/orders Response
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `orderId` | string | Unique order identifier |
-| `status` | string | Current order status |
-| `quoteId` | string | Associated quote ID |
-| `solverId` | string | Executing solver ID |
-| `userAddress` | Address | User's address |
-| `inputs` | Input[] | Input assets being provided |
-| `outputs` | Output[] | Output assets being received |
-| `createdAt` | number | Creation timestamp |
-| `expiresAt` | number | Expiration timestamp |
-| `fillTxHash` | string\|null | Output fill transaction hash |
-| `claimTxHash` | string\|null | Input claim transaction hash |
-| `executionDetails` | object\|null | Execution timing details |
+| `orderId` | string? | Unique order identifier (if accepted) |
+| `status` | string | `"received"`, `"rejected"`, or `"error"` |
+| `message` | string? | Additional details on status |
+| `order` | object? | The submitted order data |
 
-### Execution Details
+### GET /v1/orders/:id Response
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `filledAt` | number | When outputs were filled |
-| `claimedAt` | number | When inputs were claimed |
-| `gasUsed` | string | Total gas used |
-| `totalDuration` | number | Seconds from submit to complete |
+| `id` | string | Unique order identifier |
+| `status` | OrderStatus | Current order status |
+| `createdAt` | number | Creation timestamp (Unix seconds) |
+| `updatedAt` | number | Last update timestamp (Unix seconds) |
+| `quoteId` | string? | Associated quote ID |
+| `inputAmounts` | AssetAmount[] | Input assets and amounts |
+| `outputAmounts` | AssetAmount[] | Output assets and amounts |
+| `settlement` | Settlement | Settlement mechanism info |
+| `fillTransaction` | object? | Transaction details if executed |
+
+### AssetAmount
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `asset` | Address | Asset address (EIP-7930 format) |
+| `amount` | string? | Amount in smallest unit |
+
+### Settlement
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | `"escrow"` or `"resourceLock"` |
+| `data` | object | Settlement-specific parameters |
 
 ## Complete Example Flow
 
@@ -230,32 +250,35 @@ curl -X POST http://localhost:3000/v1/quotes \
   }'
 ```
 
-### Step 2: Sign Quote
+### Step 2: Sign Quote (EIP-712)
+
+The quote contains EIP-712 typed data that must be signed by the user:
 
 ```typescript
-import { ethers } from 'ethers';
-
 const quote = quotesResponse.quotes[0];
-const message = ethers.utils.keccak256(
-  ethers.utils.defaultAbiCoder.encode(
-    ['string', 'string', 'uint256'],
-    [quote.quoteId, user.address, quote.expiresAt]
-  )
-);
 
-const signature = await signer.signMessage(ethers.utils.arrayify(message));
+// The order payload contains EIP-712 typed data
+const { domain, types, message } = quote.order.payload;
+
+// Sign using EIP-712 typed data
+const signature = await signer.signTypedData(domain, types, message);
 ```
 
 ### Step 3: Submit Order
 
-```bash
-curl -X POST http://localhost:3000/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{
-    "quoteId": "quote_abc123xyz",
-    "signature": "0x1234567890abcdef...",
-    "userAddress": "0x00010000010114D8DA6BF26964AF9D7EED9E03E53415D37AA96045"
-  }'
+```typescript
+const response = await fetch('http://localhost:3000/v1/orders', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    order: quote.order,
+    signature: signature,
+    quoteId: quote.quoteId
+  })
+});
+
+const result = await response.json();
+// { orderId: "order_xyz789", status: "received", message: "..." }
 ```
 
 ### Step 4: Poll for Status
@@ -286,76 +309,67 @@ done
 
 ```typescript
 const now = Math.floor(Date.now() / 1000);
-if (quote.expiresAt < now) {
+if (quote.validUntil && quote.validUntil < now) {
   throw new Error('Quote expired, request new quotes');
-}
-
-// Verify integrity checksum
-if (!verifyIntegrity(quote, secret)) {
-  throw new Error('Quote integrity check failed');
 }
 ```
 
 ### 2. Proper Signature Generation
 
 ```typescript
-// Use EIP-191 signed message
-const messageHash = ethers.utils.hashMessage(quoteId);
-const signature = await signer.signMessage(quoteId);
+// EIP-712 typed data signing
+const { domain, types, message } = quote.order.payload;
+const signature = await signer.signTypedData(domain, types, message);
 ```
 
-### 3. Implement Status Polling
+### 3. Handle Order Submission
+
+```typescript
+const result = await submitOrder(quote.order, signature, quote.quoteId);
+
+if (result.status === 'received') {
+  console.log(`Order accepted: ${result.orderId}`);
+  // Start polling for order status
+} else if (result.status === 'rejected') {
+  console.error(`Order rejected: ${result.message}`);
+}
+```
+
+### 4. Implement Status Polling
 
 ```typescript
 async function waitForCompletion(orderId, maxWaitSeconds = 300) {
   const startTime = Date.now();
-  
+
   while ((Date.now() - startTime) / 1000 < maxWaitSeconds) {
     const order = await getOrder(orderId);
-    
-    if (order.status === 'completed') {
+
+    if (order.status === 'finalized') {
       return order;
     }
-    
-    if (order.status === 'failed' || order.status === 'expired') {
-      throw new Error(`Order ${order.status}: ${order.error}`);
+
+    if (order.status === 'failed' || order.status === 'refunded') {
+      throw new Error(`Order ${order.status}`);
     }
-    
+
     await sleep(5000); // Poll every 5 seconds
   }
-  
+
   throw new Error('Order execution timeout');
 }
 ```
 
-### 4. Handle Expiration
+### 5. Monitor Order Progress
 
 ```typescript
-const order = await submitOrder(quoteId, signature, userAddress);
+const order = await getOrder(orderId);
 
-// Set up expiration handler
-setTimeout(() => {
-  checkOrderStatus(order.orderId).then(status => {
-    if (status === 'expired') {
-      console.log('Order expired, initiate refund');
-    }
-  });
-}, (order.expiresAt - Date.now() / 1000) * 1000);
-```
+// Check settlement info
+console.log(`Settlement type: ${order.settlement.type}`);
 
-### 5. Monitor Transactions
-
-```typescript
-if (order.fillTxHash) {
-  // Monitor fill transaction
-  const fillReceipt = await provider.waitForTransaction(order.fillTxHash);
-  console.log(`Fill confirmed in block ${fillReceipt.blockNumber}`);
-}
-
-if (order.claimTxHash) {
-  // Monitor claim transaction
-  const claimReceipt = await provider.waitForTransaction(order.claimTxHash);
-  console.log(`Claim confirmed in block ${claimReceipt.blockNumber}`);
+// Check fill transaction if available
+if (order.fillTransaction) {
+  console.log('Order has been executed');
 }
 ```
 
@@ -366,7 +380,7 @@ Webhook support for order status updates is planned:
 ```typescript
 {
   "webhookUrl": "https://your-app.com/webhooks/oif",
-  "events": ["order.filled", "order.completed", "order.failed"]
+  "events": ["order.executed", "order.finalized", "order.failed"]
 }
 ```
 
@@ -382,4 +396,3 @@ See [Rate Limits](/docs/apis/rate-limits) for details.
 - See [Complete Examples](/docs/apis/examples)
 - Learn about [Error Handling](/docs/apis/errors)
 - Check [Solver API](/docs/apis/solver-api) for solver discovery
-

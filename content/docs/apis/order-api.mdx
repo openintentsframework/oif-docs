@@ -23,6 +23,10 @@ GET /v1/orders/:id
 
 ### Request Format
 
+<Callout type="info">
+  This request format matches the Solver's `POST /api/orders` endpoint, both using the `PostOrderRequest` type from [oif-specs](https://github.com/openintentsframework/oif-specs).
+</Callout>
+
 ```typescript
 {
   order: Order;              // The order object from the quote response

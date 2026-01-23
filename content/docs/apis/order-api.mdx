@@ -34,7 +34,7 @@ GET /v1/orders/:id
   quoteId?: string;          // Optional quote ID for tracking
   originSubmission?: {       // Optional submission preference
     mode: "user" | "protocol";
-    schemes?: Array<"erc-4337" | "permit2" | "erc20-permit" | "eip-3009">;
+    schemes?: Array<"erc-4337" | "permit2" | "erc20-permit" | "eip3009">;
   };
 }
 ```
@@ -163,9 +163,11 @@ stateDiagram-v2
     created --> pending: Validation passed
     pending --> executing: Execution started
     executing --> executed: Transactions submitted
-    executed --> settling: Settlement started
+    executed --> postFilled: Oracle interaction
+    postFilled --> settling: Settlement started
     settling --> settled: Assets available
-    settled --> finalized: Claims confirmed
+    settled --> preClaimed: Pre-claim setup
+    preClaimed --> finalized: Claims confirmed
 
     pending --> failed: Execution failed
     executing --> failed: Transaction failed
@@ -183,9 +185,11 @@ stateDiagram-v2
 | `created` | Order created, not yet validated | Wait for validation |
 | `pending` | Order validated, awaiting execution | Wait for solver to begin |
 | `executing` | Transactions being submitted | Monitor execution |
-| `executed` | Transactions submitted to blockchain | Wait for settlement |
+| `executed` | Transactions submitted to blockchain | Wait for oracle interaction |
+| `postFilled` | Oracle interaction completed | Wait for settlement |
 | `settling` | Settlement in progress | Monitor settlement |
-| `settled` | Assets available for claiming | Wait for finalization |
+| `settled` | Assets available for claiming | Wait for pre-claim setup |
+| `preClaimed` | Pre-claim setup completed | Wait for finalization |
 | `finalized` | Order complete, all claims confirmed | No action needed |
 | `failed` | Execution failed | Check error, may retry |
 | `refunded` | Order failed and inputs refunded | No action needed |

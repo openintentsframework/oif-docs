@@ -1,0 +1,47 @@
+---
+title: Deployed Addresses
+description: Contract addresses for OIF deployments across supported chains
+---
+
+# Deployed Addresses
+
+This page lists the deployed contract addresses for OIF across all supported networks.
+
+<Callout type="info">
+  OIF uses deterministic deployment (CREATE2) for settlement contracts, so addresses are consistent across chains.
+</Callout>
+
+## OIF Settlement Contracts
+
+The core OIF settlement contracts are deployed on all supported mainnets at the same addresses:
+
+| Contract | Address |
+|---|---|
+| **InputSettlerEscrow** | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` |
+| **OutputSettlerSimple** | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+
+### Supported Mainnets
+
+| Chain | InputSettlerEscrow | OutputSettlerSimple |
+|---|---|---|
+| Ethereum | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+| Arbitrum | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+| Base | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+| Linea | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+| Optimism | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+| Scroll | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+| zkSync | `0x15eA18EAcD9C35b454CF1456ed1bD05636B46147` | `0x1DCE289d62C2068584C5D0CFb5C1fD538e832847` |
+
+<Callout type="info">
+  Settlement contracts are not yet deployed on testnets.
+</Callout>
+
+## Broadcaster Infrastructure
+
+For broadcaster contract deployments (broadcaster, receiver, pusher, buffer, provers, and copies), see the [broadcaster deployments repository](https://github.com/openintentsframework/broadcaster/tree/main/deployments).
+
+## Related Docs
+
+- **Core Contracts**: Read about [InputSettlerEscrow and OutputSettler](/docs/smart-contracts/core-contracts) implementations
+- **Deployment Guide**: See the [Deployment Guide](/docs/smart-contracts/deployment) for production deployment procedures
+- **Supporting New Networks**: Learn about [adding new chain support](/docs/smart-contracts/supporting-new-networks)
